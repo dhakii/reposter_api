@@ -1,0 +1,4 @@
+venv/
+.env
+vk_token.json
+__pycache__/
