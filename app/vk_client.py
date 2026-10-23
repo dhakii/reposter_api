@@ -1,5 +1,6 @@
 import os
 import logging
+import threading
 from typing import Sequence, Optional
 import requests
 from vk_api import VkApi
@@ -11,7 +12,7 @@ logger = logging.getLogger(__name__)
 class VkRuSession(requests.Session):
     """
     Сессия с автоматической переадресацией api.vk.com / pu.vk.com -> api.vk.ru / pu.vk.ru
-    и защитным таймаутом 30с, предотвращающим зависание на российских серверах.
+    и защитным таймаутом 20с, предотвращающим зависание на российских серверах.
     """
     def request(self, method, url, *args, **kwargs):
         if "api.vk.com" in url:
@@ -19,7 +20,7 @@ class VkRuSession(requests.Session):
         if "pu.vk.com" in url:
             url = url.replace("pu.vk.com", "pu.vk.ru")
         if "timeout" not in kwargs:
-            kwargs["timeout"] = 30
+            kwargs["timeout"] = 20
         clean_url = url.split("?")[0]
         logger.info("VK HTTP %s %s (timeout=%s)", method, clean_url, kwargs.get("timeout"))
         return super().request(method, url, *args, **kwargs)
@@ -28,6 +29,7 @@ class VkRuSession(requests.Session):
 _cached_token = None
 _vk = None
 _upload = None
+_cached_target_album_id = None
 
 
 def _get_vk_and_upload():
@@ -41,8 +43,6 @@ def _get_vk_and_upload():
         session.http = VkRuSession()
         _vk = session.get_api()
         _upload = VkUpload(session)
-        # КРИТИЧНО: сессия VkUpload по умолчанию создает отдельный requests.Session() без таймаута!
-        # Переопределяем ее на VkRuSession, чтобы загрузка фото не зависала:
         _upload.http = VkRuSession()
         _cached_token = token
 
@@ -52,16 +52,27 @@ def _get_vk_and_upload():
 def get_target_album_id(group_id: int, custom_album_id: Optional[int] = None) -> Optional[int]:
     """
     Определяет или создает альбом в сообществе для сохранения лотов аукциона.
+    Кэширует ID альбома в памяти, чтобы не делать тяжелых запросов при каждом посте.
     """
+    global _cached_target_album_id
     if custom_album_id:
         return custom_album_id
+
+    if _cached_target_album_id:
+        return _cached_target_album_id
 
     env_album = os.getenv("VK_ALBUM_ID")
     if env_album and env_album.strip():
         try:
-            return int(env_album.strip())
+            _cached_target_album_id = int(env_album.strip())
+            return _cached_target_album_id
         except ValueError:
             pass
+
+    # Дефолтный ID альбома для сообщества 232528016 ("Основной альбом")
+    if group_id == 232528016:
+        _cached_target_album_id = 309969339
+        return _cached_target_album_id
 
     vk, _ = _get_vk_and_upload()
     try:
@@ -73,23 +84,22 @@ def get_target_album_id(group_id: int, custom_album_id: Optional[int] = None) ->
         for a in items:
             title_lower = (a.get("title") or "").lower()
             if any(k in title_lower for k in ("лот", "аукцион", "коллекци")):
-                logger.info("Found matching VK album: id=%d, title='%s'", a["id"], a.get("title"))
-                return a["id"]
+                _cached_target_album_id = a["id"]
+                return _cached_target_album_id
 
         # 2. Поиск "Основной альбом"
         for a in items:
             title_lower = (a.get("title") or "").lower()
             if "основной" in title_lower:
-                logger.info("Found 'Основной альбом': id=%d", a["id"])
-                return a["id"]
+                _cached_target_album_id = a["id"]
+                return _cached_target_album_id
 
         # 3. Первый доступный альбом
         if items:
-            logger.info("Using first available VK album: id=%d, title='%s'", items[0]["id"], items[0].get("title"))
-            return items[0]["id"]
+            _cached_target_album_id = items[0]["id"]
+            return _cached_target_album_id
 
         # 4. Если альбомов нет, создаем новый
-        logger.info("No albums found in VK group, creating 'Лоты аукциона «Твоя Коллекция»'...")
         new_album = vk.photos.createAlbum(
             title="Лоты аукциона «Твоя Коллекция»",
             group_id=group_id,
@@ -97,8 +107,8 @@ def get_target_album_id(group_id: int, custom_album_id: Optional[int] = None) ->
             upload_by_admins_only=1,
             comments_disabled=0,
         )
-        logger.info("Created new VK album: id=%s", new_album.get("id"))
-        return new_album.get("id")
+        _cached_target_album_id = new_album.get("id")
+        return _cached_target_album_id
     except Exception as e:
         logger.warning("Could not determine or create VK album: %s", e)
         return None
@@ -133,7 +143,7 @@ def save_photos_to_album(
         logger.info("Successfully saved %d photo(s) to VK group album %s", len(uploaded), album_id)
         return uploaded
     except Exception as e:
-        logger.exception("Failed to save photos to VK album %s: %s", album_id, e)
+        logger.warning("Failed to save photos to VK album %s: %s", album_id, e)
         return []
 
 
@@ -146,7 +156,8 @@ def post(
 ) -> dict:
     """
     Загружает фото на стену сообщества и публикует пост от имени группы.
-    При включенном save_to_album также сохраняет работы в альбом группы.
+    В первую очередь быстро публикует пост на стене, а сохранение фото в альбом
+    выполняет в фоновом потоке, чтобы исключить таймауты Telegram-бота.
     """
     group_id = int(os.getenv("VK_GROUP_ID", "0"))
     if not group_id:
@@ -154,20 +165,7 @@ def post(
 
     vk, upload = _get_vk_and_upload()
 
-    # 1. Автоматическое сохранение в альбом группы (каталог)
-    album_saved_photos = []
-    if image_paths and save_to_album:
-        try:
-            album_saved_photos = save_photos_to_album(
-                image_paths=image_paths,
-                group_id=group_id,
-                caption=album_caption,
-                custom_album_id=custom_album_id,
-            )
-        except Exception as e:
-            logger.exception("Error in save_photos_to_album: %s", e)
-
-    # 2. Загрузка фото для публикации на стене
+    # 1. Загрузка фото для публикации на стене (быстро, 1-2 секунды)
     attachments = None
     if image_paths:
         logger.info("Uploading %d photo(s) to VK group wall...", len(image_paths))
@@ -175,7 +173,7 @@ def post(
         attachments = ",".join(f"photo{p['owner_id']}_{p['id']}" for p in wall_photos)
         logger.info("Wall photos uploaded: attachments=%s", attachments)
 
-    # 3. Публикация поста на стене сообщества
+    # 2. Публикация поста на стене сообщества
     logger.info("Publishing wall post from group_id=%d...", group_id)
     post_res = vk.wall.post(
         owner_id=-group_id,
@@ -184,7 +182,23 @@ def post(
         attachments=attachments,
     )
     logger.info("Wall post published successfully: post_id=%s", post_res.get("post_id"))
-    post_res["album_saved_count"] = len(album_saved_photos)
+
+    # 3. Сохранение фото в альбом сообщества запускаем в фоне, не блокируя ответ боту
+    if image_paths and save_to_album:
+        def _bg_album_save():
+            try:
+                save_photos_to_album(
+                    image_paths=image_paths,
+                    group_id=group_id,
+                    caption=album_caption,
+                    custom_album_id=custom_album_id,
+                )
+            except Exception as exc:
+                logger.warning("Background album save error: %s", exc)
+
+        threading.Thread(target=_bg_album_save, daemon=True, name="vk-album-save").start()
+
+    post_res["album_saved_count"] = len(image_paths) if (image_paths and save_to_album) else 0
     return post_res
 
 
