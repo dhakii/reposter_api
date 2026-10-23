@@ -2,3 +2,6 @@ venv/
 .env
 vk_token.json
 __pycache__/
+
+.wrangler/
+

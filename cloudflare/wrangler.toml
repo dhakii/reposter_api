@@ -3,4 +3,4 @@ main = "worker.js"
 compatibility_date = "2024-10-01"
 
 [vars]
-ALLOWED_IPS = "64.188.106.134"
+ALLOWED_IPS = "64.188.106.134, 2a12:bec4:1bb0:e3b::2"

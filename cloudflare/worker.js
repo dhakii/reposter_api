@@ -7,9 +7,10 @@
  * 3. Полная очистка IP-заголовков (cf-connecting-ip, x-forwarded-for, x-real-ip) перед запросом к VK — VK видит только Cloudflare Edge.
  */
 
-// Разрешённые IP-адреса серверов (IP вашего VPS в Германии)
+// Разрешённые IP-адреса серверов (IPv4 и IPv6 вашего VPS)
 const DEFAULT_ALLOWED_IPS = [
   "64.188.106.134",
+  "2a12:bec4:1bb0:e3b::2",
 ];
 
 export default {
