@@ -1,23 +1,61 @@
 # app/main.py
 import os
+import random
+import logging
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-from .models import RepostRequest, RepostResponse
+from .models import RepostRequest, RepostResponse, DigestRequest
 from .tg_media import download_photos
-from .vk_client import post as vk_post
+from .vk_client import post as vk_post, post_digest as vk_post_digest
 from .utils import add_utm
 
-# Загружаем .env для локальных запусков
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 SHARED = os.getenv("SHARED_SECRET", "")
 VK_TOKEN = os.getenv("VK_USER_TOKEN") or os.getenv("VK_TOKEN")
 VK_GROUP_ID = os.getenv("VK_GROUP_ID")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 
-app = FastAPI(title="VK Reposter API", version="1.0.2")
+app = FastAPI(title="VK Reposter API", version="1.1.0")
+
+
+TEMPLATES = {
+    "gallery": (
+        "🏛 Новое поступление в коллекцию | Аукцион №{auction_id}\n\n"
+        "{body}\n\n"
+        "✨ Участвовать в торгах и следить за лотом:\n"
+        "👉 {lot_url}\n\n"
+        "#твояколлекция #аукцион #живопись #арт #картина #искусство #коллекция"
+    ),
+    "auction": (
+        "🔨 Открыты торги по лоту №{auction_id} ({status})!\n\n"
+        "{body}\n\n"
+        "📌 Подробности, правила и текущая ставка доступны в Telegram:\n"
+        "🔗 {lot_url}\n\n"
+        "Успейте сделать ставку до завершения раунда!\n"
+        "#аукцион #арт #картины #твояколлекция #купитькартину #art #живопись"
+    ),
+    "story": (
+        "🎨 Прекрасная работа ищет свой новый дом.\n\n"
+        "Аукцион №{auction_id} — {status}\n\n"
+        "{body}\n\n"
+        "Взгляните на детали и примите участие в торгах:\n"
+        "✨ {lot_url}\n\n"
+        "#твояколлекция #авторскаяживопись #искусствовдом #аукцион #картинамаслом"
+    ),
+    "compact": (
+        "Лот №{auction_id} — {status}\n\n"
+        "{body}\n\n"
+        "Участие в торгах: {lot_url}\n\n"
+        "#твояколлекция #аукцион"
+    ),
+}
 
 
 def _auth(secret_header: str | None):
@@ -43,30 +81,100 @@ def _require_env():
         raise HTTPException(status_code=500, detail=f"Missing env: {', '.join(missing)}")
 
 
+def _format_post_message(req: RepostRequest, lot_url: str | None) -> str:
+    url_str = str(lot_url) if lot_url else "-"
+    template_key = (req.template or "").lower().strip()
+
+    if template_key == "random":
+        template_key = random.choice(["gallery", "auction", "story", "compact"])
+
+    if template_key in TEMPLATES:
+        return TEMPLATES[template_key].format(
+            auction_id=req.auction_id,
+            status=req.status,
+            body=req.body,
+            lot_url=url_str,
+        )
+
+    # Fallback / пользовательский заголовок
+    header = req.header or f"Аукцион №{req.auction_id} — {req.status}"
+    return (
+        f"{header}\n\n"
+        f"{req.body}\n\n"
+        f"Ссылка на лот: {url_str}\n"
+        f"#твояколлекция #аукцион #искусство #арт #art #купитькартину #красота #вдохновение #живопись"
+    )
+
+
 @app.post("/repost", response_model=RepostResponse)
 def repost(req: RepostRequest, x_reposter_secret: str | None = Header(default=None)):
     _auth(x_reposter_secret)
     _require_env()
 
     lot_url = add_utm(req.lot_url) if req.lot_url else None
+    msg = _format_post_message(req, lot_url)
 
-    # Если header передан – используем его. Иначе дефолт без звёздочек.
-    header = req.header or f"Аукцион №{req.auction_id} — {req.status}"
+    photos = download_photos(req.photo_file_ids) if req.photo_file_ids else []
 
-    msg = (
-        f"{header}\n\n"
-        f"{req.body}\n\n"
-        f"Ссылка на лот: {lot_url or '-'}\n"
-        f"#твояколлекция #аукцион #искусство #арт #art #купитькартину #красота #вдохновение #живопись"
+    album_caption = f"Лот №{req.auction_id} ({req.status})\n{lot_url or ''}".strip()
+    save_album = True if req.save_to_album is None else bool(req.save_to_album)
+
+    vk_resp = vk_post(
+        message=msg,
+        image_paths=photos,
+        save_to_album=save_album,
+        album_caption=album_caption,
+        custom_album_id=req.album_id,
     )
-
-    photos = download_photos(req.photo_file_ids)
-    vk_resp = vk_post(message=msg, image_paths=photos)
 
     return JSONResponse(
         content=RepostResponse(
             vk_post_id=vk_resp.get("post_id"),
             vk_owner_id=-int(os.getenv("VK_GROUP_ID", "0")),
             message="ok",
+            album_saved_count=vk_resp.get("album_saved_count", 0),
         ).dict()
+    )
+
+
+@app.post("/digest")
+def create_digest(req: DigestRequest, x_reposter_secret: str | None = Header(default=None)):
+    _auth(x_reposter_secret)
+    _require_env()
+
+    intro = req.intro or (
+        f"{req.title}\n\n"
+        f"Друзья, представляем актуальные лоты нашего аукциона! "
+        f"Каждая работа уникальна и доступна для участия в торгах в Telegram:\n"
+    )
+
+    items_text = []
+    photo_file_ids = []
+    for i, item in enumerate(req.items, 1):
+        line = f"{i}️⃣ Лот №{item.auction_id}: {item.title}"
+        if item.price:
+            line += f" ({item.price})"
+        if item.lot_url:
+            line += f"\n👉 {item.lot_url}"
+        items_text.append(line)
+        if item.photo_file_id:
+            photo_file_ids.append(item.photo_file_id)
+
+    outro = req.outro or (
+        "\nПрисоединяйтесь к торгам в нашем боте: https://t.me/marinakhakimova_auction\n"
+        "#твояколлекция #аукцион #подборканедели #искусство #живопись #коллекция"
+    )
+
+    full_message = f"{intro}\n\n" + "\n\n".join(items_text) + f"\n\n{outro}"
+
+    photos = download_photos(photo_file_ids) if photo_file_ids else []
+    vk_resp = vk_post_digest(message=full_message, image_paths=photos)
+
+    return JSONResponse(
+        content={
+            "vk_post_id": vk_resp.get("post_id"),
+            "vk_owner_id": -int(os.getenv("VK_GROUP_ID", "0")),
+            "message": "ok",
+            "items_count": len(req.items),
+        }
     )

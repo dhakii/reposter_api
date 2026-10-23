@@ -4,9 +4,12 @@ import tempfile
 from pathlib import Path
 import requests
 from typing import List
-from dotenv import load_dotenv
 
-load_dotenv()  # чтобы TG_BOT_TOKEN подтянулся из .env при локальном запуске
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 API = f"https://api.telegram.org/bot{TG_BOT_TOKEN}" if TG_BOT_TOKEN else None
@@ -28,27 +31,32 @@ def download_photos(file_ids: List[str]) -> List[Path]:
         return paths
 
     tmpdir = Path(tempfile.mkdtemp(prefix="reposter_"))
-    session = requests.Session()
-
     for fid in file_ids:
+        if not fid:
+            continue
         try:
-            r = session.get(f"{API}/getFile", params={"file_id": fid}, timeout=15)
-            if r.status_code != 200:
-                continue  # пропускаем проблемный file_id
-            file_path = r.json().get("result", {}).get("file_path")
-            if not file_path:
+            # 1. getFile -> file_path
+            res = requests.get(f"{API}/getFile", params={"file_id": fid}, timeout=20)
+            if res.status_code != 200:
+                continue
+            data = res.json()
+            if not data.get("ok"):
                 continue
 
-            url = f"{FILE_API}/{file_path}"
-            resp = session.get(url, timeout=30)
-            if resp.status_code != 200 or not resp.content:
+            file_path = data["result"]["file_path"]
+
+            # 2. download content
+            res_file = requests.get(f"{FILE_API}/{file_path}", timeout=30)
+            if res_file.status_code != 200:
                 continue
 
-            out = tmpdir / Path(file_path).name
-            out.write_bytes(resp.content)
-            paths.append(out)
-        except requests.RequestException:
-            # сетевые проблемы — пропускаем конкретное фото
+            # 3. save to local temp file
+            ext = Path(file_path).suffix or ".jpg"
+            target = tmpdir / f"{fid}{ext}"
+            target.write_bytes(res_file.content)
+            paths.append(target)
+        except Exception:
+            # Не валим весь процесс, если одна картинка сбойнула
             continue
 
     return paths
