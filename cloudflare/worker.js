@@ -1,15 +1,80 @@
 /**
  * Cloudflare Worker: VK API & Photo Upload Proxy
  *
- * Назначение:
- * 1. Полностью скрывает реальный IP-адрес вашего сервера от российских дата-центров (VK).
- * 2. Обходит сетевые блокировки/таймауты зарубежных VPS при обращении к pu.vk.ru / pu.vk.com.
- *
- * Бесплатный тариф Cloudflare Workers: 100 000 запросов в день (более чем достаточно).
+ * Безопасность:
+ * 1. Проверка IP клиента (CF-Connecting-IP): доступ разрешён ТОЛЬКО с указанного IP сервера.
+ * 2. Дополнительная проверка секретного ключа X-Proxy-Secret (если задан PROXY_SECRET).
+ * 3. Полная очистка IP-заголовков (cf-connecting-ip, x-forwarded-for, x-real-ip) перед запросом к VK — VK видит только Cloudflare Edge.
  */
+
+// Разрешённые IP-адреса серверов (IP вашего VPS в Германии)
+const DEFAULT_ALLOWED_IPS = [
+  "64.188.106.134",
+];
 
 export default {
   async fetch(request, env, ctx) {
+    const clientIp = request.headers.get("cf-connecting-ip");
+
+    // Список разрешённых IP (из переменных окружения или дефолтный)
+    const allowedIps = (env.ALLOWED_IPS ? env.ALLOWED_IPS.split(",") : DEFAULT_ALLOWED_IPS)
+      .map((ip) => ip.trim())
+      .filter(Boolean);
+
+    const proxySecret = env.PROXY_SECRET || "";
+    const clientSecret = request.headers.get("X-Proxy-Secret");
+
+    const isIpAllowed = allowedIps.length === 0 || (clientIp && allowedIps.includes(clientIp));
+    const isSecretValid = !proxySecret || clientSecret === proxySecret;
+
+    const incomingUrl = new URL(request.url);
+
+    // Healthcheck на корне / для проверки статуса
+    if (incomingUrl.pathname === "/" && !request.headers.get("X-Target-URL") && !incomingUrl.search) {
+      return new Response(
+        JSON.stringify(
+          {
+            status: "ok",
+            service: "vk-proxy-worker",
+            your_ip: clientIp,
+            ip_authorized: isIpAllowed,
+            security: {
+              ip_whitelist_active: allowedIps.length > 0,
+              allowed_ips: allowedIps,
+              secret_check_active: Boolean(proxySecret),
+            },
+            message: isIpAllowed
+              ? "Access granted for your IP."
+              : `Access denied. Your IP (${clientIp}) is not in the whitelist. Only authorized bot servers (64.188.106.134) can proxy through this worker.`,
+          },
+          null,
+          2
+        ),
+        {
+          status: isIpAllowed ? 200 : 403,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        }
+      );
+    }
+
+    // Блокируем доступ посторонним IP
+    if (!isIpAllowed || !isSecretValid) {
+      return new Response(
+        JSON.stringify(
+          {
+            error: "Forbidden",
+            message: `Access denied for IP ${clientIp}. Only authorized bot servers can use this proxy.`,
+          },
+          null,
+          2
+        ),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/json; charset=utf-8" },
+        }
+      );
+    }
+
     // 1. CORS Preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -22,25 +87,8 @@ export default {
       });
     }
 
-    const incomingUrl = new URL(request.url);
-
-    // 2. Health check при открытии в браузере или curl
-    if (incomingUrl.pathname === "/" && !request.headers.get("X-Target-URL") && !incomingUrl.search) {
-      return new Response(
-        JSON.stringify({
-          status: "ok",
-          service: "vk-proxy-worker",
-          message: "VK Proxy is operational and protecting your origin IP.",
-        }, null, 2),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json; charset=utf-8" },
-        }
-      );
-    }
-
     try {
-      // 3. Определение целевого URL
+      // 2. Определение целевого URL
       const targetUrlHeader = request.headers.get("X-Target-URL");
       let targetUrl;
 
@@ -58,12 +106,12 @@ export default {
         targetUrl.protocol = "https:";
       }
 
-      // 4. Очистка и подготовка заголовков:
-      // Удаляем заголовки прокси и все клиентские IP-заголовки Cloudflare
+      // 3. Очистка заголовков — удаляем любые упоминания IP сервера
       const newHeaders = new Headers(request.headers);
       newHeaders.delete("Host");
       newHeaders.delete("X-Target-URL");
       newHeaders.delete("X-VK-Host");
+      newHeaders.delete("X-Proxy-Secret");
       newHeaders.delete("cf-connecting-ip");
       newHeaders.delete("cf-ipcountry");
       newHeaders.delete("cf-ray");
@@ -82,15 +130,12 @@ export default {
 
       if (hasBody) {
         fetchOptions.body = request.body;
-        // Обязательно для потоковой передачи тела запроса (фотографий multipart/form-data)
+        // Обязательно для потоковой передачи multipart файлов (фотографий)
         fetchOptions.duplex = "half";
       }
 
-      // 5. Запрос к VK от имени Cloudflare
-      const response = await fetch(targetUrl.toString(), fetchOptions);
-
-      // 6. Возврат ответа вызывающей стороне
-      return response;
+      // 4. Запрос к VK от имени Cloudflare
+      return await fetch(targetUrl.toString(), fetchOptions);
     } catch (err) {
       return new Response(
         JSON.stringify(

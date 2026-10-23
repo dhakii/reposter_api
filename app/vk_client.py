@@ -52,6 +52,9 @@ class VkRuSession(requests.Session):
                 headers = dict(kwargs.get("headers") or {})
                 headers["X-Target-URL"] = url
                 headers["X-VK-Host"] = parsed.netloc
+                proxy_secret = os.getenv("VK_PROXY_SECRET") or os.getenv("SHARED_SECRET")
+                if proxy_secret:
+                    headers["X-Proxy-Secret"] = proxy_secret
                 kwargs["headers"] = headers
 
                 logger.info(
