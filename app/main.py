@@ -4,6 +4,13 @@ import random
 import logging
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -15,14 +22,12 @@ from .tg_media import download_photos
 from .vk_client import post as vk_post, post_digest as vk_post_digest
 from .utils import add_utm
 
-logger = logging.getLogger(__name__)
-
 SHARED = os.getenv("SHARED_SECRET", "")
 VK_TOKEN = os.getenv("VK_USER_TOKEN") or os.getenv("VK_TOKEN")
 VK_GROUP_ID = os.getenv("VK_GROUP_ID")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 
-app = FastAPI(title="VK Reposter API", version="1.1.0")
+app = FastAPI(title="VK Reposter API", version="1.1.1")
 
 
 TEMPLATES = {
@@ -108,10 +113,19 @@ def _format_post_message(req: RepostRequest, lot_url: str | None) -> str:
 
 @app.post("/repost", response_model=RepostResponse)
 def repost(req: RepostRequest, x_reposter_secret: str | None = Header(default=None)):
+    logger.info(
+        ">>> [START /repost] auction_id=%d, status='%s', photos=%d, template='%s', save_album=%s",
+        req.auction_id,
+        req.status,
+        len(req.photo_file_ids),
+        req.template,
+        req.save_to_album,
+    )
     _auth(x_reposter_secret)
     _require_env()
 
-    lot_url = add_utm(req.lot_url) if req.lot_url else None
+    lot_url_str = str(req.lot_url) if req.lot_url else None
+    lot_url = add_utm(lot_url_str) if lot_url_str else None
     msg = _format_post_message(req, lot_url)
 
     photos = download_photos(req.photo_file_ids) if req.photo_file_ids else []
@@ -119,12 +133,19 @@ def repost(req: RepostRequest, x_reposter_secret: str | None = Header(default=No
     album_caption = f"Лот №{req.auction_id} ({req.status})\n{lot_url or ''}".strip()
     save_album = True if req.save_to_album is None else bool(req.save_to_album)
 
+    logger.info("Executing vk_post: message_len=%d, photos_count=%d, save_to_album=%s", len(msg), len(photos), save_album)
     vk_resp = vk_post(
         message=msg,
         image_paths=photos,
         save_to_album=save_album,
         album_caption=album_caption,
         custom_album_id=req.album_id,
+    )
+    logger.info(
+        ">>> [FINISH /repost] auction_id=%d: vk_post_id=%s, album_saved=%s",
+        req.auction_id,
+        vk_resp.get("post_id"),
+        vk_resp.get("album_saved_count"),
     )
 
     return JSONResponse(
@@ -139,6 +160,7 @@ def repost(req: RepostRequest, x_reposter_secret: str | None = Header(default=No
 
 @app.post("/digest")
 def create_digest(req: DigestRequest, x_reposter_secret: str | None = Header(default=None)):
+    logger.info(">>> [START /digest] items=%d, title='%s'", len(req.items), req.title)
     _auth(x_reposter_secret)
     _require_env()
 
@@ -161,7 +183,7 @@ def create_digest(req: DigestRequest, x_reposter_secret: str | None = Header(def
             photo_file_ids.append(item.photo_file_id)
 
     outro = req.outro or (
-        "\nПрисоединяйтесь к торгам в нашем боте: https://t.me/marinakhakimova_auction\n"
+        "\nПрисоединяйтесь к торгах в нашем боте: https://t.me/marinakhakimova_auction\n"
         "#твояколлекция #аукцион #подборканедели #искусство #живопись #коллекция"
     )
 
@@ -169,6 +191,7 @@ def create_digest(req: DigestRequest, x_reposter_secret: str | None = Header(def
 
     photos = download_photos(photo_file_ids) if photo_file_ids else []
     vk_resp = vk_post_digest(message=full_message, image_paths=photos)
+    logger.info(">>> [FINISH /digest] vk_post_id=%s", vk_resp.get("post_id"))
 
     return JSONResponse(
         content={
