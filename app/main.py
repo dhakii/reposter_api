@@ -13,11 +13,11 @@ from .utils import add_utm
 load_dotenv()
 
 SHARED = os.getenv("SHARED_SECRET", "")
-VK_TOKEN = os.getenv("VK_TOKEN")
+VK_TOKEN = os.getenv("VK_USER_TOKEN") or os.getenv("VK_TOKEN")
 VK_GROUP_ID = os.getenv("VK_GROUP_ID")
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")
 
-app = FastAPI(title="VK Reposter API", version="1.0.1")
+app = FastAPI(title="VK Reposter API", version="1.0.2")
 
 
 def _auth(secret_header: str | None):
@@ -29,12 +29,15 @@ def _auth(secret_header: str | None):
 
 
 def _require_env():
+    token = os.getenv("VK_USER_TOKEN") or os.getenv("VK_TOKEN")
+    group_id = os.getenv("VK_GROUP_ID")
+    tg_token = os.getenv("TG_BOT_TOKEN")
     missing = []
-    if not VK_TOKEN:
-        missing.append("VK_TOKEN")
-    if not VK_GROUP_ID:
+    if not token:
+        missing.append("VK_USER_TOKEN (or VK_TOKEN)")
+    if not group_id:
         missing.append("VK_GROUP_ID")
-    if not TG_BOT_TOKEN:
+    if not tg_token:
         missing.append("TG_BOT_TOKEN")
     if missing:
         raise HTTPException(status_code=500, detail=f"Missing env: {', '.join(missing)}")
