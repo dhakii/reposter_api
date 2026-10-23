@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import urllib.parse
 from typing import Sequence, Optional
 import requests
 from vk_api import VkApi
@@ -11,18 +12,55 @@ logger = logging.getLogger(__name__)
 
 class VkRuSession(requests.Session):
     """
-    Сессия с автоматической переадресацией api.vk.com / pu.vk.com -> api.vk.ru / pu.vk.ru
-    и защитным таймаутом 20с, предотвращающим зависание на российских серверах.
+    Сессия для работы с VK.
+    Если задан VK_PROXY_URL (например, Cloudflare Worker https://vk-proxy.xxx.workers.dev),
+    все запросы к VK API и серверам загрузки фото (pu.vk.ru) маршрутизируются через него.
+    Это полностью скрывает реальный IP сервера и решает проблему сетевых блокировок дата-центров.
     """
+    def __init__(self, proxy_url: Optional[str] = None):
+        super().__init__()
+        self._proxy_url = proxy_url
+
+    @property
+    def proxy_url(self) -> str:
+        url = self._proxy_url or os.getenv("VK_PROXY_URL") or ""
+        return url.strip().rstrip("/")
+
     def request(self, method, url, *args, **kwargs):
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = 35
+
+        # Нормализация доменов vk.com -> vk.ru
         if "api.vk.com" in url:
             url = url.replace("api.vk.com", "api.vk.ru")
         if "pu.vk.com" in url:
             url = url.replace("pu.vk.com", "pu.vk.ru")
-        if "timeout" not in kwargs:
-            kwargs["timeout"] = 20
+
         clean_url = url.split("?")[0]
-        logger.info("VK HTTP %s %s (timeout=%s)", method, clean_url, kwargs.get("timeout"))
+        proxy = self.proxy_url
+
+        if proxy:
+            parsed = urllib.parse.urlsplit(url)
+            # Перенаправляем все вызовы к VK через Cloudflare Worker
+            if any(k in parsed.netloc for k in ("vk.com", "vk.ru", "userapi.com")):
+                path_and_query = parsed.path
+                if parsed.query:
+                    path_and_query += "?" + parsed.query
+
+                new_url = f"{proxy}{path_and_query}"
+
+                headers = dict(kwargs.get("headers") or {})
+                headers["X-Target-URL"] = url
+                headers["X-VK-Host"] = parsed.netloc
+                kwargs["headers"] = headers
+
+                logger.info(
+                    "VK HTTP [via CF Proxy %s] %s %s (timeout=%s)",
+                    proxy, method, clean_url, kwargs.get("timeout")
+                )
+                return super().request(method, new_url, *args, **kwargs)
+
+        logger.info("VK HTTP [direct] %s %s (timeout=%s)", method, clean_url, kwargs.get("timeout"))
         return super().request(method, url, *args, **kwargs)
 
 
