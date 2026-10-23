@@ -31,6 +31,12 @@ app = FastAPI(title="VK Reposter API", version="1.1.1")
 
 
 TEMPLATES = {
+    "classic": (
+        "{header}\n\n"
+        "{body}\n\n"
+        "Ссылка на лот: {lot_url}\n"
+        "#твояколлекция #аукцион #искусство #арт #art #купитькартину #красота #вдохновение #живопись"
+    ),
     "gallery": (
         "🏛 Новое поступление в коллекцию | Аукцион №{auction_id}\n\n"
         "{body}\n\n"
@@ -88,7 +94,16 @@ def _require_env():
 
 def _format_post_message(req: RepostRequest, lot_url: str | None) -> str:
     url_str = str(lot_url) if lot_url else "-"
-    template_key = (req.template or "").lower().strip()
+    header = req.header or f"Аукцион №{req.auction_id} — {req.status}"
+    template_key = (req.template or "classic").lower().strip()
+
+    if template_key in ("classic", "default", ""):
+        return (
+            f"{header}\n\n"
+            f"{req.body}\n\n"
+            f"Ссылка на лот: {url_str}\n"
+            f"#твояколлекция #аукцион #искусство #арт #art #купитькартину #красота #вдохновение #живопись"
+        )
 
     if template_key == "random":
         template_key = random.choice(["gallery", "auction", "story", "compact"])
@@ -98,11 +113,10 @@ def _format_post_message(req: RepostRequest, lot_url: str | None) -> str:
             auction_id=req.auction_id,
             status=req.status,
             body=req.body,
+            header=header,
             lot_url=url_str,
         )
 
-    # Fallback / пользовательский заголовок
-    header = req.header or f"Аукцион №{req.auction_id} — {req.status}"
     return (
         f"{header}\n\n"
         f"{req.body}\n\n"

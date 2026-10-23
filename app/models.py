@@ -8,7 +8,7 @@ class RepostRequest(BaseModel):
     lot_url: Optional[HttpUrl] = None
     photo_file_ids: List[str] = []
     header: Optional[str] = None
-    template: Optional[str] = "random"     # "random", "gallery", "auction", "story", "compact"
+    template: Optional[str] = "classic"     # "classic", "random", "gallery", "auction", "story", "compact"
     save_to_album: Optional[bool] = True   # автоматически сохранять фото в альбом группы
     album_id: Optional[int] = None         # опциональный ID конкретного альбома
 
