@@ -144,7 +144,12 @@ def repost(req: RepostRequest, x_reposter_secret: str | None = Header(default=No
 
     photos = download_photos(req.photo_file_ids) if req.photo_file_ids else []
 
-    album_caption = f"Лот №{req.auction_id} ({req.status})\n{lot_url or ''}".strip()
+    caption_parts = [f"Лот №{req.auction_id}"]
+    if req.body and req.body.strip():
+        caption_parts.append(req.body.strip())
+    if lot_url:
+        caption_parts.append(f"Ссылка на лот: {lot_url}")
+    album_caption = "\n\n".join(caption_parts).strip()
     save_album = True if req.save_to_album is None else bool(req.save_to_album)
 
     logger.info("Executing vk_post: message_len=%d, photos_count=%d, save_to_album=%s", len(msg), len(photos), save_album)
