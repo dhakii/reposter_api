@@ -123,17 +123,18 @@ export default {
       const method = request.method.toUpperCase();
       const hasBody = !["GET", "HEAD"].includes(method);
 
+      let bodyData = undefined;
+      if (hasBody) {
+        bodyData = await request.arrayBuffer();
+        newHeaders.set("Content-Length", String(bodyData.byteLength));
+      }
+
       const fetchOptions = {
         method: method,
         headers: newHeaders,
+        body: bodyData,
         redirect: "follow",
       };
-
-      if (hasBody) {
-        fetchOptions.body = request.body;
-        // Обязательно для потоковой передачи multipart файлов (фотографий)
-        fetchOptions.duplex = "half";
-      }
 
       // 4. Запрос к VK от имени Cloudflare
       return await fetch(targetUrl.toString(), fetchOptions);
