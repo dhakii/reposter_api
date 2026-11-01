@@ -1,0 +1,15 @@
+[Unit]
+Description=Trigger Auction Video Digest Daily
+Requires=auction-digest.service
+
+[Timer]
+# Запуск каждый день в 12:00 по времени сервера (можно поменять на любое время)
+OnCalendar=*-*-* 12:00:00
+# Persistent=true гарантирует, что если сервер был выключен во время запуска,
+# задача выполнится сразу после включения сервера
+Persistent=true
+# Небольшой разброс времени (jitter) в 60 секунд для избежания пиковых нагрузок
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

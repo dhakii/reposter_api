@@ -1,32 +1,21 @@
 # app/video_engine/overlays.py
 """
-Pillow-генератор графических слоев и слайдов строго по спецификации DESIGN_SYSTEM.md.
-Реализует:
-- Раздел 3: Все цветовые токены, виньетку 0%..48%..100%, градиенты и шрифты
-- Раздел 4: Типографическая шкала (Hero, Artwork, Artist, Price, Kicker, Pill, Captions)
-- Раздел 5: Компоненты AmbientBackground, FloatingArtwork, TopLotPill, LotInfoCard, BrandEmblem, HeroModalCard
-- Раздел 6: Dynamic Layout Engine (математика стека с адаптивной привязкой)
+Мобильный оверлей-генератор:
+- Премиум-каталог (Варианты 4A, 4B, 4C): полупрозрачный блюр-фон из картины, симметричный текст, выделение цены
+- Адаптивный умный блюр (Вариант 2): глубокий темный блюр-фон
+- Финал на фирменном светлом фоне логотипа (#EFEDEE)
 """
 
 import os
 from pathlib import Path
 from typing import Tuple, Dict, Any, Optional
-import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
-
-from .liquid_glass import (
-    render_liquid_glass_card,
-    render_floating_artwork,
-    get_supersampled_logo,
-    make_gradient_135,
-    make_gradient_180,
-    make_rounded_mask,
-    make_specular_border_mask,
-)
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 W, H = 1080, 1920
 
-# Загрузка шрифтов по токенам раздела 4 DESIGN_SYSTEM.md
+BRAND_LOGO_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "brand" / "logo.png"
+
+
 def _load_font(candidates, size):
     for fp in candidates:
         if os.path.exists(fp):
@@ -36,444 +25,320 @@ def _load_font(candidates, size):
                 continue
     return ImageFont.load_default()
 
+
 FONTS = {
-    "HERO_TITLE": _load_font([r"C:\Windows\Fonts\georgiab.ttf", "georgiab.ttf"], 50),
-    "ARTWORK_TITLE": _load_font([r"C:\Windows\Fonts\georgiaz.ttf", "georgiaz.ttf"], 38),
-    "ARTIST_NAME": _load_font([r"C:\Windows\Fonts\seguisb.ttf", "seguisb.ttf"], 25),
-    "PRICE_TAG": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 24),
-    "CTA_BUTTON_TEXT": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 26),
-    "HANDLE_BADGE_TEXT": _load_font([r"C:\Windows\Fonts\seguisb.ttf", "seguisb.ttf"], 26),
-    "TOP_PILL_TEXT": _load_font([r"C:\Windows\Fonts\seguisb.ttf", "seguisb.ttf"], 20),
-    "SECTION_KICKER": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 21),
-    "BODY_SUBTITLE": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 26),
-    "CAPTION_META": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 21),
-    "CAPTION_META_BOLD": _load_font([r"C:\Windows\Fonts\seguisb.ttf", "seguisb.ttf"], 21),
+    # Крупные шрифты для мобильных экранов
+    "hook_kicker": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 28),
+    "artist_top": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 52),
+    "title_bottom": _load_font([r"C:\Windows\Fonts\georgiaz.ttf", "georgiaz.ttf"], 44),
+    "price_bottom": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 56),
+    "channel_bottom": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 30),
+    "channel_bold": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 30),
+
+    # Для стилей Премиум-каталога (4A, 4B, 4C)
+    "edit_kicker": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 26),
+    "edit_artist": _load_font([r"C:\Windows\Fonts\georgiab.ttf", "georgiab.ttf", r"C:\Windows\Fonts\segoeuib.ttf"], 52),
+    "edit_title": _load_font([r"C:\Windows\Fonts\georgiaz.ttf", "georgiaz.ttf"], 44),
+    "edit_badge": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 36),
+    "edit_price_large": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 58),
+    "edit_label": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 24),
+    "edit_channel": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 28),
+
+    # Финальный бренд-слайд
+    "brand_tag": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 28),
+    "brand_handle": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 46),
+    "brand_hint": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 28),
 }
 
-# Цветовые токены раздела 3
-TEXT_PRIMARY = (255, 255, 255, 255)
-TEXT_SECONDARY = (255, 255, 255, int(255 * 0.78))
-TEXT_MUTED = (255, 255, 255, int(255 * 0.56))
-ACCENT_RED_TEXT = (239, 59, 54, 255)  # #EF3B36
 
-
-def draw_spaced_text(
-    draw: ImageDraw.ImageDraw,
-    x: float,
-    y: float,
-    text: str,
-    font: ImageFont.ImageFont,
-    fill: Any,
-    letter_spacing: float = 2.0,
-    center: bool = True,
-):
-    """Отрисовка текста с трекингом (letter-spacing)."""
-    widths = []
-    for ch in text:
-        bbox = draw.textbbox((0, 0), ch, font=font)
-        widths.append(bbox[2] - bbox[0])
-    total_w = sum(widths) + letter_spacing * (len(text) - 1) if text else 0
-    curr_x = x - total_w / 2 if center else x
-
-    for i, ch in enumerate(text):
-        draw.text((curr_x, y), ch, font=font, fill=fill)
-        curr_x += widths[i] + letter_spacing
-
-
-def make_background_layer(source_image_path: str) -> Image.Image:
+def make_semi_transparent_blurred_background(
+    art_img: Image.Image,
+    art_opacity: float = 0.25,
+    base_rgb: Tuple[int, int, int] = (246, 245, 241),
+) -> Image.Image:
     """
-    Компонент AmbientBackground (Раздел 5.1):
-    1. Исходник cover 1080x1920
-    2. GaussianBlur(radius=65)
-    3. Виньетка (Раздел 3.1):
-       * 0%: rgba(8, 10, 14, 0.58) -> a=148
-       * 48%: rgba(8, 10, 14, 0.34) -> a=87
-       * 100%: rgba(8, 10, 14, 0.80) -> a=204
+    Создает светлый пастельный фон с полупрозрачной размытой картиной:
+    - Размываем картину мягким блюром через даунскейл
+    - Смешиваем с теплым галерейным офф-вайтом (base_rgb) с заданной прозрачностью art_opacity (20-30%)
+    - Результат: мягкий акварельный оттенок красок полотна на светлой бумаге
     """
-    src = Image.open(source_image_path).convert("RGBA")
-    sw, sh = src.size
+    bw, bh = art_img.size
+    scale = max(W / bw, H / bh)
+    scaled_w, scaled_h = int(bw * scale), int(bh * scale)
+    bg_scaled = art_img.resize((scaled_w, scaled_h), Image.Resampling.BILINEAR)
 
-    scale = max(W / sw, H / sh)
-    nw, nh = int(sw * scale), int(sh * scale)
-    src_scaled = src.resize((nw, nh), Image.Resampling.LANCZOS)
+    crop_x = (scaled_w - W) // 2
+    crop_y = (scaled_h - H) // 2
+    bg_cropped = bg_scaled.crop((crop_x, crop_y, crop_x + W, crop_y + H))
 
-    cx = (nw - W) // 2
-    cy = (nh - H) // 2
-    bg_cropped = src_scaled.crop((cx, cy, cx + W, cy + H))
-    bg_blurred = bg_cropped.filter(ImageFilter.GaussianBlur(65))
+    # Быстрый мягкий блюр через 4x downscale
+    bg_small = bg_cropped.resize((W // 4, H // 4), Image.Resampling.BILINEAR)
+    bg_blur_small = bg_small.filter(ImageFilter.GaussianBlur(18))
+    bg_blur = bg_blur_small.resize((W, H), Image.Resampling.BICUBIC).convert("RGBA")
 
-    # Виньетка 0%..48%..100%
-    y_norm = np.linspace(0.0, 1.0, H, dtype=np.float32)[:, None]
-    y_full = np.tile(y_norm, (1, W))
-
-    a_arr = np.where(
-        y_full < 0.48,
-        148.0 + (87.0 - 148.0) * (y_full / 0.48),
-        87.0 + (204.0 - 87.0) * ((y_full - 0.48) / 0.52)
-    ).astype(np.uint8)
-
-    r_arr = np.full((H, W), 8, dtype=np.uint8)
-    g_arr = np.full((H, W), 10, dtype=np.uint8)
-    b_arr = np.full((H, W), 14, dtype=np.uint8)
-
-    vignette = Image.fromarray(np.stack([r_arr, g_arr, b_arr, a_arr], axis=-1), "RGBA")
-    return Image.alpha_composite(bg_blurred, vignette)
+    base_bg = Image.new("RGBA", (W, H), (*base_rgb, 255))
+    return Image.blend(base_bg, bg_blur, art_opacity)
 
 
-def render_upper_pill_component(
-    bg: Image.Image,
-    pill_y: int,
+def create_adaptive_ambient_background(
+    art_img: Image.Image,
+    width: int = W,
+    height: int = H,
+    brightness: float = 0.38,
+    blur_radius: int = 75,
+) -> Image.Image:
+    """
+    Создает адаптивный глубокий темный фон из колорита самой картины (Вариант 2).
+    """
+    bw, bh = art_img.size
+    scale = max(width / bw, height / bh)
+    scaled_w, scaled_h = int(bw * scale), int(bh * scale)
+    bg_scaled = art_img.resize((scaled_w, scaled_h), Image.Resampling.BILINEAR)
+
+    crop_x = (scaled_w - width) // 2
+    crop_y = (scaled_h - height) // 2
+    bg_cropped = bg_scaled.crop((crop_x, crop_y, crop_x + width, crop_y + height))
+
+    small_w, small_h = width // 4, height // 4
+    bg_small = bg_cropped.resize((small_w, small_h), Image.Resampling.BILINEAR)
+    bg_blurred_small = bg_small.filter(ImageFilter.GaussianBlur(blur_radius // 4))
+    bg_blurred = bg_blurred_small.resize((width, height), Image.Resampling.BICUBIC)
+
+    enhancer = ImageEnhance.Brightness(bg_blurred)
+    bg_dark = enhancer.enhance(brightness)
+    canvas = bg_dark.convert("RGBA")
+
+    vignette = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    vdraw = ImageDraw.Draw(vignette)
+    for y in range(350):
+        alpha = int(180 * (1.0 - y / 350.0))
+        vdraw.line([(0, y), (width, y)], fill=(8, 10, 14, alpha))
+    for y in range(1380, height):
+        alpha = int(210 * ((y - 1380) / (height - 1380)))
+        vdraw.line([(0, y), (width, y)], fill=(8, 10, 14, alpha))
+
+    return Image.alpha_composite(canvas, vignette)
+
+
+def make_editorial_typography_overlay(
     lot_num: int,
-) -> Tuple[Image.Image, Tuple[int, int]]:
-    """
-    Компонент TopLotPill (Раздел 5.3):
-    - Высота: 52px
-    - Горизонтальные отступы: 34px слева и справа
-    - border_radius: 999px (полная капсула)
-    - Текст: TOP_PILL_TEXT (20px, UPPERCASE, трекинг +2.2px)
-    """
-    text = f"ЛОТ №{lot_num} • ТВОЯ КОЛЛЕКЦИЯ"
-    temp_im = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
-    tdraw = ImageDraw.Draw(temp_im)
-
-    widths = [tdraw.textbbox((0, 0), ch, font=FONTS["TOP_PILL_TEXT"])[2] - tdraw.textbbox((0, 0), ch, font=FONTS["TOP_PILL_TEXT"])[0] for ch in text]
-    text_w = sum(widths) + 2.2 * (len(text) - 1)
-    text_h = 22
-
-    pad_x = 34
-    pill_w = int(round(text_w + pad_x * 2))
-    pill_h = 52
-    pill_x = int(round((W - pill_w) / 2))
-
-    card_canvas = render_liquid_glass_card(
-        base_canvas=bg,
-        x=pill_x,
-        y=pill_y,
-        w=pill_w,
-        h=pill_h,
-        radius=999,
-    )
-
-    # Отрисовываем текст поверх
-    text_local_x = pill_x + pill_w / 2
-    text_local_y = pill_y + (pill_h - text_h) / 2 - 2
-
-    content_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    cdraw = ImageDraw.Draw(content_layer)
-    draw_spaced_text(
-        cdraw,
-        text_local_x,
-        text_local_y,
-        text,
-        FONTS["TOP_PILL_TEXT"],
-        (255, 255, 255, int(255 * 0.92)),
-        letter_spacing=2.2,
-        center=True,
-    )
-
-    card_canvas.alpha_composite(content_layer)
-    # Возвращаем слой пилла для анимации смещения
-    # Вырежем пилл вместе с тенью для анимации translateY
-    crop_pad = 80
-    cx1 = max(0, pill_x - crop_pad)
-    cy1 = max(0, pill_y - crop_pad)
-    cx2 = min(W, pill_x + pill_w + crop_pad)
-    cy2 = min(H, pill_y + pill_h + crop_pad)
-    cropped_pill = card_canvas.crop((cx1, cy1, cx2, cy2))
-
-    return cropped_pill, (cx1, cy1)
-
-
-def render_bottom_card_component(
-    bg: Image.Image,
-    card_y: int,
     artist: str,
     title: str,
     price: str,
+    variant: str = "hybrid",
+    is_first_slide: bool = False,
+    is_sold: bool = False,
     channel_link: str = "@marinakhakimova_auction",
-) -> Tuple[Image.Image, Tuple[int, int]]:
+) -> Image.Image:
     """
-    Компонент LotInfoCard (Раздел 5.4):
-    - Ширина 940px (X=70), высота 216px, border_radius 28px
-    - Строка 1: Имя автора (ARTIST_NAME 25px, X_rel=36, Y_rel=28)
-    - Строка 2: Название картины (ARTWORK_TITLE 38px, X_rel=36, Y_rel=64)
-    - Разделитель: GLASS_DIVIDER (1px rgba(255,255,255,0.12), X_rel=36, Y_rel=124, ширина 868)
-    - Строка 3: Нижний бар (Y_rel=166):
-      * Слева: PriceBadge (48px высота, radius 14px, градиент #E52D27->#B31217, 24px Bold)
-      * Справа: Торги в канале @marinakhakimova_auction (21px)
+    Создает симметричный статический оверлей для стилей Премиум-каталога:
+    - «hybrid»: Верх (автор из 4A + ЛОТ в красной плашке из 4B) + Низ из 4C (цена Sotheby's с лучами)
+    - «4a»: Красный бейдж со стартовой ценой
+    - «4b»: Белая плашка с рамкой
+    - «4c»: Типографика Sotheby's
     """
-    card_w = 940
-    card_h = 216
-    card_x = 70
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
-    card_canvas = render_liquid_glass_card(
-        base_canvas=bg,
-        x=card_x,
-        y=card_y,
-        w=card_w,
-        h=card_h,
-        radius=28,
-    )
-
-    content_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    cdraw = ImageDraw.Draw(content_layer)
-
-    # 1. Строка 1: Имя автора
-    cdraw.text((card_x + 36, card_y + 28), artist, fill=TEXT_SECONDARY, font=FONTS["ARTIST_NAME"])
-
-    # 2. Строка 2: Название картины
+    v = variant.lower()
     quoted_title = f"«{title}»" if not title.startswith("«") else title
-    cdraw.text((card_x + 36, card_y + 64), quoted_title, fill=TEXT_PRIMARY, font=FONTS["ARTWORK_TITLE"])
 
-    # 3. Разделитель 1px
-    div_y = card_y + 124
-    cdraw.line([(card_x + 36, div_y), (card_x + 36 + 868, div_y)], fill=(255, 255, 255, int(255 * 0.12)), width=1)
+    # =========================================================================
+    # ГИБРИДНЫЙ ВАРИАНТ (ВЫБОР ПОЛЬЗОВАТЕЛЯ):
+    # Верх: Автор из 4A + ЛОТ в красной плашке из 4B + разделитель
+    # Низ: Sotheby's из 4C (СТАРТОВАЯ ЦЕНА + Крупная цифра с линиями + Telegram)
+    # =========================================================================
+    if v in ["hybrid", "4_hybrid"]:
+        badge_str = f"АУКЦИОН  •  ЛОТ №{lot_num}"
+        tb = draw.textbbox((0, 0), badge_str, font=FONTS["edit_label"])
+        btw = tb[2] - tb[0]
+        bbw = btw + 44
+        bbh = 42
+        bbx = (W - bbw) // 2
+        bby = 150
+        draw.rounded_rectangle([bbx, bby, bbx + bbw, bby + bbh], radius=21, fill=(229, 45, 39, 240))
+        draw.text((W // 2, bby + bbh // 2), badge_str, fill=(255, 255, 255, 255), font=FONTS["edit_label"], anchor="mm")
 
-    # 4. Строка 3: Нижний бар
-    clean_price = price if price.startswith("Старт:") or price.startswith("от") else f"Старт: {price}"
-    p_bbox = cdraw.textbbox((0, 0), clean_price, font=FONTS["PRICE_TAG"])
-    ptw = p_bbox[2] - p_bbox[0]
+        draw.text((W // 2, 230), artist, fill=(20, 22, 26, 255), font=FONTS["edit_artist"], anchor="mm")
+        draw.line([(W // 2 - 35, 275), (W // 2 + 35, 275)], fill=(229, 45, 39, 180), width=2)
 
-    cap_pad_x = 22
-    cap_pad_y = 10
-    cap_w = ptw + cap_pad_x * 2
-    cap_h = 48
-    cap_x = card_x + 36
-    cap_y = card_y + 144
+        # НИЖНИЙ БЛОК: Сдвинут вниз в безопасную зону с гарантированным зазором от картины (>100px)
+        draw.text((W // 2, 1465), quoted_title, fill=(45, 48, 55, 255), font=FONTS["edit_title"], anchor="mm")
 
-    # Заливка капсулы ACCENT_BUTTON_GRADIENT 180° (#E52D27 -> #B31217)
-    btn_stops = [
-        (0.0, (229, 45, 39, 255)),   # #E52D27
-        (1.0, (179, 18, 23, 255)),   # #B31217
-    ]
-    price_grad = make_gradient_180(cap_w, cap_h, btn_stops)
-    price_mask = make_rounded_mask(cap_w, cap_h, radius=14)
+        status_label = "ПРОДАНО" if is_sold else "СТАРТОВАЯ ЦЕНА"
+        lbl_color = (40, 167, 69, 255) if is_sold else (229, 45, 39, 255)
+        draw.text((W // 2, 1525), status_label, fill=lbl_color, font=FONTS["edit_label"], anchor="mm")
+        draw.text((W // 2, 1580), price, fill=(18, 20, 24, 255), font=FONTS["edit_price_large"], anchor="mm")
 
-    # Обводка 1px rgba(255,255,255,0.30)
-    p_border_mask = make_specular_border_mask(cap_w, cap_h, radius=14, border_width=1.0)
-    p_border = Image.new("RGBA", (cap_w, cap_h), (255, 255, 255, int(255 * 0.30)))
+        pb = draw.textbbox((W // 2, 1580), price, font=FONTS["edit_price_large"], anchor="mm")
+        draw.line([(pb[0] - 50, 1580), (pb[0] - 15, 1580)], fill=(*lbl_color[:3], 200), width=3)
+        draw.line([(pb[2] + 15, 1580), (pb[2] + 50, 1580)], fill=(*lbl_color[:3], 200), width=3)
 
-    content_layer.paste(price_grad, (cap_x, cap_y), price_mask)
-    content_layer.paste(p_border, (cap_x, cap_y), p_border_mask)
+        draw.text((W // 2, 1660), f"Торги в Telegram: {channel_link}", fill=(85, 90, 102, 255), font=FONTS["edit_channel"], anchor="mm")
+        return overlay
 
-    # Текст цены
-    cdraw.text((cap_x + cap_pad_x, cap_y + cap_pad_y + 1), clean_price, fill=TEXT_PRIMARY, font=FONTS["PRICE_TAG"])
+    # 1. ВЕРХНИЙ СИММЕТРИЧНЫЙ БЛОК (Центрирован строго по X=540)
+    kicker = f"АУКЦИОН  •  ЛОТ №{lot_num}"
 
-    # Справа: Торги в канале @marinakhakimova_auction
-    text_y = cap_y + 13
-    prefix = "Торги в канале "
-    pref_w = cdraw.textbbox((0, 0), prefix, font=FONTS["CAPTION_META"])[2] - cdraw.textbbox((0, 0), prefix, font=FONTS["CAPTION_META"])[0]
+    if v == "4b":
+        # Вариант 4B: капсула лота сверху
+        lot_tag = f"АУКЦИОН  •  ЛОТ №{lot_num}"
+        draw.rounded_rectangle([W // 2 - 140, 155, W // 2 + 140, 197], radius=21, fill=(229, 45, 39, 230))
+        draw.text((W // 2, 176), lot_tag, fill=(255, 255, 255, 255), font=FONTS["edit_label"], anchor="mm")
+        draw.text((W // 2, 238), artist, fill=(20, 22, 28, 255), font=FONTS["edit_artist"], anchor="mm")
+        draw.text((W // 2, 285), "ТВОЯ КОЛЛЕКЦИЯ  •  АУКЦИОН КАРТИН", fill=(130, 135, 145, 255), font=_load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 22), anchor="mm")
+    else:
+        # Варианты 4A и 4C: чистый центрированный заголовок с тонкой разделительной линией
+        draw.text((W // 2, 175), kicker, fill=(229, 45, 39, 255), font=FONTS["edit_kicker"], anchor="mm")
+        draw.text((W // 2, 230), artist, fill=(20, 22, 26, 255), font=FONTS["edit_artist"], anchor="mm")
+        line_w = 60 if v == "4a" else 360
+        line_color = (229, 45, 39, 180) if v == "4a" else (210, 205, 195, 255)
+        draw.line([(W // 2 - line_w // 2, 275), (W // 2 + line_w // 2, 275)], fill=line_color, width=2)
 
-    right_x = cap_x + cap_w + 24
-    cdraw.text((right_x, text_y), prefix, fill=TEXT_MUTED, font=FONTS["CAPTION_META"])
-    cdraw.text((right_x + pref_w, text_y), channel_link, fill=TEXT_PRIMARY, font=FONTS["CAPTION_META_BOLD"])
+    # 2. НИЖНИЙ СИММЕТРИЧНЫЙ БЛОК
+    quoted_title = f"«{title}»" if not title.startswith("«") else title
 
-    card_canvas.alpha_composite(content_layer)
+    if v == "4a":
+        # Вариант 4A: Сочный красный бейдж со скруглением
+        draw.text((W // 2, 1435), quoted_title, fill=(45, 48, 55, 255), font=FONTS["edit_title"], anchor="mm")
 
-    crop_pad = 80
-    cx1 = max(0, card_x - crop_pad)
-    cy1 = max(0, card_y - crop_pad)
-    cx2 = min(W, card_x + card_w + crop_pad)
-    cy2 = min(H, card_y + card_h + crop_pad)
-    cropped_card = card_canvas.crop((cx1, cy1, cx2, cy2))
+        badge_text = f"ПРОДАНО: {price}" if is_sold else f"СТАРТ: {price}"
+        badge_bg = (40, 167, 69, 255) if is_sold else (229, 45, 39, 255)
 
-    return cropped_card, (cx1, cy1)
+        bb = draw.textbbox((0, 0), badge_text, font=FONTS["edit_badge"])
+        tw = bb[2] - bb[0]
+        bw = tw + 70
+        bh = 64
+        bx = (W - bw) // 2
+        by = 1485
 
+        # Тень под бейджем
+        bsh = Image.new("RGBA", (bw + 20, bh + 20), (0, 0, 0, 0))
+        bdraw = ImageDraw.Draw(bsh)
+        bdraw.rounded_rectangle([10, 12, 10 + bw, 12 + bh], radius=24, fill=(*badge_bg[:3], 70))
+        bsh = bsh.filter(ImageFilter.GaussianBlur(8))
+        overlay.paste(bsh, (bx - 10, by - 10), bsh)
 
-def render_intro_slide(
-    source_image_path: str,
-    title: str = "5 картин на аукционе сейчас",
-    subtitle: str = "Твоя Коллекция  •  Ставки в Telegram",
-) -> Image.Image:
-    """
-    Компонент HeroModalCard для 01_intro.png (Раздел 5.6 Вариант А):
-    - Высота карточки 740px (Y_top = 590px, Y_bottom = 1330px), ширина 920px (X = 80px)
-    - Y = 660px: BrandEmblem (180x180)
-    - Y = 890px: SECTION_KICKER «НОВАЯ ПОДБОРКА ЛОТОВ» (21px Bold, #EF3B36, трекинг +2.5px)
-    - Y = 945px: HERO_TITLE «5 картин на аукционе сейчас» (50px Serif Bold)
-    - Y = 1045px: Разделитель 220px, 1px rgba(255,255,255,0.16)
-    - Y = 1090px: BODY_SUBTITLE «Твоя Коллекция  •  Ставки в Telegram» (26px)
-    - Y = 1185px: «🔊 Включите звук» (21px, rgba(255,255,255,0.55))
-    """
-    bg = make_background_layer(source_image_path)
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=24, fill=badge_bg)
+        draw.text((W // 2, by + bh // 2), badge_text, fill=(255, 255, 255, 255), font=FONTS["edit_badge"], anchor="mm")
 
-    card_w = 920
-    card_h = 740
-    card_x = 80
-    card_y = 590
+        # Канал
+        draw.text((W // 2, 1595), f"Торги в Telegram: {channel_link}", fill=(75, 80, 92, 255), font=FONTS["edit_channel"], anchor="mm")
 
-    glass_canvas = render_liquid_glass_card(
-        base_canvas=bg,
-        x=card_x,
-        y=card_y,
-        w=card_w,
-        h=card_h,
-        radius=36,
-    )
+    elif v == "4b":
+        # Вариант 4B: Белая карточка с окантовкой и акцентной точкой
+        draw.text((W // 2, 1435), quoted_title, fill=(45, 48, 55, 255), font=FONTS["edit_title"], anchor="mm")
 
-    content_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    cdraw = ImageDraw.Draw(content_layer)
+        badge_text = f"Продано:  {price}" if is_sold else f"Старт:  {price}"
+        dot_color = (40, 167, 69, 255) if is_sold else (229, 45, 39, 255)
 
-    # 1. Y = 660 px: BrandEmblem 180x180
-    logo = get_supersampled_logo(target_diameter=180)
-    if logo:
-        lw, lh = logo.size
-        # центрируем логотип по горизонтали
-        content_layer.paste(logo, ((W - lw) // 2, 660 - 50), logo)
+        bb = draw.textbbox((0, 0), badge_text, font=FONTS["edit_badge"])
+        tw = bb[2] - bb[0]
+        bw = tw + 70
+        bh = 66
+        bx = (W - bw) // 2
+        by = 1485
 
-    # 2. Y = 890 px: SECTION_KICKER
-    draw_spaced_text(
-        cdraw,
-        W // 2,
-        890,
-        "НОВАЯ ПОДБОРКА ЛОТОВ",
-        FONTS["SECTION_KICKER"],
-        ACCENT_RED_TEXT,
-        letter_spacing=2.5,
-        center=True,
-    )
+        bsh = Image.new("RGBA", (bw + 20, bh + 20), (0, 0, 0, 0))
+        bdraw = ImageDraw.Draw(bsh)
+        bdraw.rounded_rectangle([10, 12, 10 + bw, 12 + bh], radius=22, fill=(0, 0, 0, 35))
+        bsh = bsh.filter(ImageFilter.GaussianBlur(10))
+        overlay.paste(bsh, (bx - 10, by - 10), bsh)
 
-    # 3. Y = 945 px: HERO_TITLE
-    cdraw.text((W // 2, 945), title, fill=TEXT_PRIMARY, font=FONTS["HERO_TITLE"], anchor="mt")
+        draw.rounded_rectangle([bx, by, bx + bw, by + bh], radius=22, fill=(255, 255, 255, 245), outline=(*dot_color[:3], 160), width=2)
+        draw.ellipse([bx + 26, by + bh // 2 - 5, bx + 36, by + bh // 2 + 5], fill=dot_color)
+        draw.text((W // 2 + 10, by + bh // 2), badge_text, fill=(20, 22, 28, 255), font=FONTS["edit_badge"], anchor="mm")
 
-    # 4. Y = 1045 px: Разделитель 220px
-    cdraw.line([(W // 2 - 110, 1045), (W // 2 + 110, 1045)], fill=(255, 255, 255, int(255 * 0.16)), width=1)
+        draw.text((W // 2, 1595), f"Торги в Telegram: {channel_link}", fill=(80, 85, 96, 255), font=FONTS["edit_channel"], anchor="mm")
 
-    # 5. Y = 1090 px: BODY_SUBTITLE
-    cdraw.text((W // 2, 1090), subtitle, fill=TEXT_SECONDARY, font=FONTS["BODY_SUBTITLE"], anchor="mt")
+    else:
+        # Вариант 4C: Крупная центрированная цена Sotheby's с графичными лучами
+        draw.text((W // 2, 1430), quoted_title, fill=(45, 48, 55, 255), font=FONTS["edit_title"], anchor="mm")
 
-    # 6. Y = 1185 px: Включите звук
-    cdraw.text((W // 2, 1185), "🔊  Включите звук", fill=TEXT_MUTED, font=FONTS["CAPTION_META"], anchor="mt")
+        status_label = "ПРОДАНО" if is_sold else "СТАРТОВАЯ ЦЕНА"
+        lbl_color = (40, 167, 69, 255) if is_sold else (229, 45, 39, 255)
+        draw.text((W // 2, 1485), status_label, fill=lbl_color, font=FONTS["edit_label"], anchor="mm")
+        draw.text((W // 2, 1535), price, fill=(18, 20, 24, 255), font=FONTS["edit_price_large"], anchor="mm")
 
-    glass_canvas.alpha_composite(content_layer)
-    return glass_canvas
+        pb = draw.textbbox((W // 2, 1535), price, font=FONTS["edit_price_large"], anchor="mm")
+        draw.line([(pb[0] - 50, 1535), (pb[0] - 15, 1535)], fill=(*lbl_color[:3], 200), width=3)
+        draw.line([(pb[2] + 15, 1535), (pb[2] + 50, 1535)], fill=(*lbl_color[:3], 200), width=3)
+
+        draw.text((W // 2, 1610), f"Торги в Telegram: {channel_link}", fill=(85, 90, 102, 255), font=FONTS["edit_channel"], anchor="mm")
+
+    return overlay
 
 
-def render_outro_slide(
-    source_image_path: str,
-    cta_title: str = "Понравилась картина?",
-    cta_subtitle: str = "Участвуйте в торгах в Telegram",
+def make_static_typography_overlay(
+    lot_num: int,
+    artist: str,
+    title: str,
+    price: str,
+    is_first_slide: bool = False,
+    is_sold: bool = False,
     channel_link: str = "@marinakhakimova_auction",
 ) -> Image.Image:
     """
-    Компонент HeroModalCard для 07_outro.png (Раздел 5.6 Вариант Б):
-    - Высота карточки 820px (Y_top = 550px, Y_bottom = 1370px), ширина 920px (X = 80px)
-    - Y = 615px: BrandEmblem (180x180)
-    - Y = 840px: SECTION_KICKER «ТВОЯ КОЛЛЕКЦИЯ • АУКЦИОН» (#EF3B36)
-    - Y = 895px: HERO_TITLE «Понравилась картина?» (50px Serif Bold)
-    - Y = 980px: BODY_SUBTITLE «Участвуйте в торгах в Telegram» (26px)
-    - Y = 1045px: Стеклянный бейдж канала (ширина 560px, высота 58px, radius 16px) -> @marinakhakimova_auction (26px SemiBold)
-    - Y = 1135px: Красная CTA-кнопка (ширина 740px, высота 82px, radius 22px) -> «Перейти в аукцион →» (26px Bold)
-    - Y = 1265px: CAPTION_META «Ссылка также в описании и шапке профиля» (21px)
+    Классический левосторонний оверлей для темного фона (Вариант 2).
     """
-    bg = make_background_layer(source_image_path)
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
 
-    card_w = 920
-    card_h = 820
-    card_x = 80
-    card_y = 550
+    if is_first_slide:
+        kicker_text = "НОВАЯ ПОДБОРКА  •  ТВОЯ КОЛЛЕКЦИЯ"
+    else:
+        kicker_text = f"ЛОТ №{lot_num}  •  ТВОЯ КОЛЛЕКЦИЯ"
 
-    glass_canvas = render_liquid_glass_card(
-        base_canvas=bg,
-        x=card_x,
-        y=card_y,
-        w=card_w,
-        h=card_h,
-        radius=36,
-    )
+    draw.text((70, 175), kicker_text, fill=(245, 60, 50, 255), font=FONTS["hook_kicker"])
+    draw.text((70, 220), artist, fill=(255, 255, 255, 255), font=FONTS["artist_top"])
 
-    content_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    cdraw = ImageDraw.Draw(content_layer)
+    quoted_title = f"«{title}»" if not title.startswith("«") else title
+    draw.text((70, 1430), quoted_title, fill=(220, 230, 245, 255), font=FONTS["title_bottom"])
 
-    # 1. Y = 615 px: BrandEmblem 180x180
-    logo = get_supersampled_logo(target_diameter=180)
-    if logo:
-        lw, lh = logo.size
-        content_layer.paste(logo, ((W - lw) // 2, 615 - 50), logo)
+    if is_sold:
+        price_text = f"Продано: {price}" if not price.startswith("Продано") else price
+        price_color = (76, 217, 100, 255)
+    else:
+        price_text = f"Старт: {price}" if not (price.startswith("Старт") or price.startswith("от")) else price
+        price_color = (255, 255, 255, 255)
 
-    # 2. Y = 840 px: SECTION_KICKER
-    draw_spaced_text(
-        cdraw,
-        W // 2,
-        840,
-        "ТВОЯ КОЛЛЕКЦИЯ • АУКЦИОН",
-        FONTS["SECTION_KICKER"],
-        ACCENT_RED_TEXT,
-        letter_spacing=2.5,
-        center=True,
-    )
+    draw.text((70, 1495), price_text, fill=price_color, font=FONTS["price_bottom"])
 
-    # 3. Y = 895 px: HERO_TITLE
-    cdraw.text((W // 2, 895), cta_title, fill=TEXT_PRIMARY, font=FONTS["HERO_TITLE"], anchor="mt")
+    prefix = "Торги в Telegram: "
+    draw.text((70, 1575), prefix, fill=(180, 190, 205, 230), font=FONTS["channel_bottom"])
+    bbox = draw.textbbox((70, 1575), prefix, font=FONTS["channel_bottom"])
+    draw.text((bbox[2], 1575), channel_link, fill=(255, 255, 255, 255), font=FONTS["channel_bold"])
 
-    # 4. Y = 980 px: BODY_SUBTITLE
-    cdraw.text((W // 2, 980), cta_subtitle, fill=TEXT_SECONDARY, font=FONTS["BODY_SUBTITLE"], anchor="mt")
+    return overlay
 
-    # 5. Y = 1045 px: Стеклянный бейдж канала (560x58)
-    badge_w, badge_h = 560, 58
-    badge_x = (W - badge_w) // 2
-    badge_y = 1045
 
-    b_grad = Image.new("RGBA", (badge_w, badge_h), (255, 255, 255, int(255 * 0.09)))
-    b_mask = make_rounded_mask(badge_w, badge_h, radius=16)
-    b_border_mask = make_specular_border_mask(badge_w, badge_h, radius=16, border_width=1.0)
-    b_border = Image.new("RGBA", (badge_w, badge_h), (255, 255, 255, int(255 * 0.20)))
+def render_brand_white_outro(
+    channel_link: str = "@marinakhakimova_auction",
+) -> Image.Image:
+    """
+    Финальный слайд на фирменном светлом фоне логотипа (#EFEDEE).
+    """
+    bg_color = (239, 237, 238, 255)
+    canvas = Image.new("RGBA", (W, H), bg_color)
 
-    content_layer.paste(b_grad, (badge_x, badge_y), b_mask)
-    content_layer.paste(b_border, (badge_x, badge_y), b_border_mask)
+    if BRAND_LOGO_PATH.exists():
+        raw_logo = Image.open(BRAND_LOGO_PATH).convert("RGBA")
+        logo_d = 380
+        logo_resized = raw_logo.resize((logo_d, logo_d), Image.Resampling.LANCZOS)
 
-    cdraw.text(
-        (badge_x + badge_w / 2, badge_y + badge_h / 2),
-        channel_link,
-        fill=TEXT_PRIMARY,
-        font=FONTS["HANDLE_BADGE_TEXT"],
-        anchor="mm",
-    )
+        mask = Image.new("L", (logo_d, logo_d), 0)
+        mdraw = ImageDraw.Draw(mask)
+        mdraw.ellipse((0, 0, logo_d - 1, logo_d - 1), fill=255)
+        logo_resized.putalpha(mask)
 
-    # 6. Y = 1135 px: Красная CTA-кнопка (740x82)
-    btn_w, btn_h = 740, 82
-    btn_x = (W - btn_w) // 2
-    btn_y = 1135
+        logo_y = 660
+        canvas.paste(logo_resized, ((W - logo_d) // 2, logo_y), logo_resized)
 
-    # Свечение кнопки ACCENT_BUTTON_GLOW: offset_y = +8px, blur = 24px, rgba(229, 45, 39, 0.40)
-    glow_pad = 40
-    glow_canvas = Image.new("RGBA", (btn_w + glow_pad * 2, btn_h + glow_pad * 2), (0, 0, 0, 0))
-    gdraw = ImageDraw.Draw(glow_canvas)
-    gdraw.rounded_rectangle(
-        [glow_pad, glow_pad + 8, glow_pad + btn_w - 1, glow_pad + btn_h + 7],
-        radius=22,
-        fill=(229, 45, 39, int(255 * 0.40))
-    )
-    glow_blurred = glow_canvas.filter(ImageFilter.GaussianBlur(24))
-    content_layer.paste(glow_blurred, (btn_x - glow_pad, btn_y - glow_pad), glow_blurred)
+    draw = ImageDraw.Draw(canvas)
 
-    # Тело кнопки: ACCENT_BUTTON_GRADIENT 180° (#E52D27 -> #B31217)
-    btn_stops = [
-        (0.0, (229, 45, 39, 255)),   # #E52D27
-        (1.0, (179, 18, 23, 255)),   # #B31217
-    ]
-    btn_grad = make_gradient_180(btn_w, btn_h, btn_stops)
-    btn_mask = make_rounded_mask(btn_w, btn_h, radius=22)
+    tag_y = 1100
+    draw.text((W // 2, tag_y), "АУКЦИОН КАРТИН В TELEGRAM", fill=(229, 45, 39, 255), font=FONTS["brand_tag"], anchor="mm")
+    draw.text((W // 2, tag_y + 70), channel_link, fill=(20, 22, 26, 255), font=FONTS["brand_handle"], anchor="mm")
+    draw.text((W // 2, tag_y + 140), "Ставки и полный каталог в описании профиля", fill=(110, 115, 125, 255), font=FONTS["brand_hint"], anchor="mm")
 
-    # ACCENT_BUTTON_BORDER: 1px solid rgba(255, 255, 255, 0.32)
-    btn_border_mask = make_specular_border_mask(btn_w, btn_h, radius=22, border_width=1.0)
-    btn_border = Image.new("RGBA", (btn_w, btn_h), (255, 255, 255, int(255 * 0.32)))
-
-    content_layer.paste(btn_grad, (btn_x, btn_y), btn_mask)
-    content_layer.paste(btn_border, (btn_x, btn_y), btn_border_mask)
-
-    # Текст внутри кнопки: «Перейти в аукцион →» (26px Bold)
-    btn_text = "Перейти в аукцион →"
-    cdraw.text(
-        (btn_x + btn_w / 2, btn_y + btn_h / 2 - 1),
-        btn_text,
-        fill=TEXT_PRIMARY,
-        font=FONTS["CTA_BUTTON_TEXT"],
-        anchor="mm",
-    )
-
-    # 7. Y = 1265 px: CAPTION_META
-    cdraw.text((W // 2, 1265), "Ссылка также в описании и шапке профиля", fill=TEXT_MUTED, font=FONTS["CAPTION_META"], anchor="mt")
-
-    glass_canvas.alpha_composite(content_layer)
-    return glass_canvas
+    return canvas

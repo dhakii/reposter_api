@@ -267,3 +267,68 @@ def post_digest(message: str, image_paths: Sequence[str] | None = None) -> dict:
         message=message,
         attachments=attachments,
     )
+
+
+def upload_video_to_vk(
+    video_path: str | Path,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    post_to_wall: bool = True,
+    group_id: Optional[int] = None,
+) -> dict:
+    """
+    Загружает вертикальное видео (VK Клипы / VK Видео) в сообщество ВКонтакте:
+    1. Загружает файл через vk_upload.video в видеозаписи группы
+    2. При post_to_wall=True создает пост на стене сообщества с прикрепленным видео
+    """
+    gid = group_id or int(os.getenv("VK_GROUP_ID", "0"))
+    if not gid:
+        raise ValueError("VK_GROUP_ID is not configured")
+
+    vpath = Path(video_path)
+    if not vpath.exists():
+        raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    vk, upload = _get_vk_and_upload()
+
+    video_name = title or "Подборка картин | Аукцион «Твоя Коллекция»"
+    video_desc = description or (
+        "Актуальные лоты аукциона живописи «Твоя Коллекция».\n"
+        "Участвуйте в торгах в Telegram: https://t.me/marinakhakimova_auction\n"
+        "#твояколлекция #аукцион #клипы #живопись #картины"
+    )
+
+    logger.info("Uploading video '%s' (size=%.2f MB) to VK group -%d...", vpath.name, vpath.stat().st_size / (1024 * 1024), gid)
+
+    upload_res = upload.video(
+        video_file=str(vpath),
+        name=video_name,
+        description=video_desc,
+        group_id=gid,
+        is_private=0,
+        wallpost=0,
+    )
+
+    video_id = upload_res.get("video_id")
+    owner_id = upload_res.get("owner_id", -gid)
+    logger.info("Video uploaded to VK: owner_id=%s, video_id=%s", owner_id, video_id)
+
+    wall_res = None
+    if post_to_wall and video_id:
+        attachment = f"video{owner_id}_{video_id}"
+        logger.info("Creating wall post with attachment %s in group -%d...", attachment, gid)
+        wall_res = vk.wall.post(
+            owner_id=-gid,
+            from_group=1,
+            message=video_desc,
+            attachments=attachment,
+        )
+        logger.info("Wall post published: post_id=%s", wall_res.get("post_id"))
+
+    return {
+        "status": "success",
+        "video_id": video_id,
+        "owner_id": owner_id,
+        "post_id": wall_res.get("post_id") if wall_res else None,
+        "direct_link": f"https://vk.ru/video{owner_id}_{video_id}" if video_id else None,
+    }

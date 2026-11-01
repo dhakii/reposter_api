@@ -2,10 +2,14 @@ venv/
 .env
 vk_token.json
 __pycache__/
+*.pyc
 
 .wrangler/
-
 
 output/
 *.mp4
 *.wav
+temp_channel.html
+data/*.json
+!data/.gitkeep
+assets/real_lots/

@@ -3,7 +3,8 @@ import os
 import random
 import logging
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from pathlib import Path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,10 +18,23 @@ try:
 except ImportError:
     pass
 
-from .models import RepostRequest, RepostResponse, DigestRequest
+from .models import (
+    RepostRequest,
+    RepostResponse,
+    DigestRequest,
+    VideoCreateRequest,
+    VideoCreateResponse,
+    VideoPublishRequest,
+    VideoPublishResponse,
+)
 from .tg_media import download_photos
-from .vk_client import post as vk_post, post_digest as vk_post_digest
+from .vk_client import (
+    post as vk_post,
+    post_digest as vk_post_digest,
+    upload_video_to_vk,
+)
 from .utils import add_utm
+from .video_engine import VideoBatchBuilder, fetch_channel_lots
 
 SHARED = os.getenv("SHARED_SECRET", "")
 VK_TOKEN = os.getenv("VK_USER_TOKEN") or os.getenv("VK_TOKEN")
@@ -220,3 +234,200 @@ def create_digest(req: DigestRequest, x_reposter_secret: str | None = Header(def
             "items_count": len(req.items),
         }
     )
+
+
+VIDEO_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
+VIDEO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.post("/video/create", response_model=VideoCreateResponse)
+def create_video(req: VideoCreateRequest, x_reposter_secret: str | None = Header(default=None)):
+    """
+    Генерирует вертикальный видеоролик (Reels / Shorts / Clips 1080x1920)
+    в утвержденном аукционном стиле «Премиум-каталог»:
+    - Если req.items передан: берет картины из запроса
+    - Если req.items пуст или req.auto_fetch_channel=True: парсит актуальные картины напрямую из канала
+    """
+    logger.info(
+        ">>> [START /video/create] auto_fetch=%s, items_len=%d, count=%d",
+        req.auto_fetch_channel,
+        len(req.items) if req.items else 0,
+        req.count,
+    )
+    _auth(x_reposter_secret)
+
+    artworks = []
+    managed_dir = VIDEO_OUTPUT_DIR / "real_lots"
+    managed_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Если включен авто-парсинг или список пуст
+    if req.auto_fetch_channel or not req.items:
+        scraped = fetch_channel_lots(
+            channel_url=f"https://t.me/s/{req.channel_link.lstrip('@')}" if req.channel_link else "https://t.me/s/marinakhakimova_auction",
+            max_count=req.count or 5,
+            download_dir=managed_dir,
+        )
+        for s in scraped:
+            artworks.append({
+                "lot_num": s["lot_num"],
+                "artist": s["artist"],
+                "title": s["title"],
+                "price": s["price"],
+                "is_sold": s.get("is_sold", False),
+                "image_path": s.get("image_path"),
+            })
+    else:
+        # 2. Берем картины из переданного списка
+        for item in req.items:
+            img_path = item.image_path
+            if not img_path or not Path(img_path).exists():
+                if item.photo_file_id:
+                    downloaded = download_photos([item.photo_file_id])
+                    if downloaded:
+                        img_path = str(downloaded[0])
+                elif item.photo_url:
+                    dest = managed_dir / f"lot_{item.lot_num}.jpg"
+                    from .video_engine.scraper import download_photo
+                    if download_photo(str(item.photo_url), dest):
+                        img_path = str(dest)
+
+            if img_path and Path(img_path).exists():
+                artworks.append({
+                    "lot_num": item.lot_num,
+                    "artist": item.artist,
+                    "title": item.title,
+                    "price": item.price,
+                    "is_sold": item.is_sold,
+                    "image_path": img_path,
+                })
+
+    if not artworks:
+        raise HTTPException(
+            status_code=400,
+            detail="Не удалось получить изображения полотен для генерации видео. Проверьте фото или канал."
+        )
+
+    # Уникальное имя выходного файла
+    import uuid
+    uid = uuid.uuid4().hex[:8]
+    out_name = f"reels_digest_{uid}.mp4"
+    out_file = VIDEO_OUTPUT_DIR / out_name
+
+    builder = VideoBatchBuilder()
+    result = builder.build_batch_reels(
+        artworks=artworks,
+        output_file=str(out_file),
+        channel_link=req.channel_link or "@marinakhakimova_auction",
+        slide_duration=req.slide_duration or 4.0,
+        outro_duration=req.outro_duration or 3.0,
+        style_variant=req.style_variant or "hybrid",
+    )
+
+    download_url = f"/video/download/{out_name}"
+    logger.info(">>> [FINISH /video/create] file=%s, duration=%.1fs, render_time=%.1fs", out_name, result["duration"], result["render_time_sec"])
+
+    return JSONResponse(
+        content={
+            "status": "success",
+            "video_path": result["video_path"],
+            "thumbnail_path": result.get("thumbnail_path"),
+            "duration": result["duration"],
+            "render_time_sec": result["render_time_sec"],
+            "file_size_mb": result["file_size_mb"],
+            "artworks_count": len(artworks),
+            "soundtrack": result.get("soundtrack", ""),
+            "download_url": download_url,
+            "lots": [
+                {
+                    "lot_num": a["lot_num"],
+                    "artist": a["artist"],
+                    "title": a["title"],
+                    "price": a["price"],
+                }
+                for a in artworks
+            ],
+        }
+    )
+
+
+@app.get("/video/download/{filename}")
+def download_video(filename: str):
+    """
+    Отдает сгенерированный mp4 файл для скачивания или стриминга.
+    """
+    safe_filename = Path(filename).name
+    file_path = VIDEO_OUTPUT_DIR / safe_filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Видеофайл не найден")
+    return FileResponse(
+        path=str(file_path),
+        media_type="video/mp4",
+        filename=safe_filename,
+    )
+
+
+@app.get("/video/latest")
+def get_latest_video():
+    """
+    Возвращает информацию о последнем сгенерированном ролике.
+    """
+    mp4_files = sorted(VIDEO_OUTPUT_DIR.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not mp4_files:
+        raise HTTPException(status_code=404, detail="Нет сгенерированных видео")
+    latest = mp4_files[0]
+    return {
+        "filename": latest.name,
+        "path": str(latest),
+        "size_mb": round(latest.stat().st_size / (1024 * 1024), 2),
+        "download_url": f"/video/download/{latest.name}",
+    }
+
+
+@app.post("/video/publish", response_model=VideoPublishResponse)
+def publish_video(req: VideoPublishRequest, x_reposter_secret: str | None = Header(default=None)):
+    """
+    Публикует сгенерированное вертикальное видео в VK Клипы / Видеозаписи группы ВКонтакте
+    и (опционально) создает пост на стене сообщества.
+    """
+    _auth(x_reposter_secret)
+
+    token = os.getenv("VK_USER_TOKEN") or os.getenv("VK_TOKEN")
+    group_id = os.getenv("VK_GROUP_ID")
+    if not token or not group_id:
+        raise HTTPException(
+            status_code=500,
+            detail="VK_USER_TOKEN или VK_GROUP_ID не настроены в окружении сервера."
+        )
+
+    # Определяем файл для загрузки
+    target_path = None
+    if req.video_path and Path(req.video_path).exists():
+        target_path = Path(req.video_path)
+    elif req.filename:
+        p = VIDEO_OUTPUT_DIR / Path(req.filename).name
+        if p.exists():
+            target_path = p
+
+    if not target_path:
+        # Берем самый свежий ролик
+        mp4_files = sorted(VIDEO_OUTPUT_DIR.glob("*.mp4"), key=lambda f: f.stat().st_mtime, reverse=True)
+        if mp4_files:
+            target_path = mp4_files[0]
+
+    if not target_path or not target_path.exists():
+        raise HTTPException(status_code=404, detail="Файл видео для публикации не найден.")
+
+    logger.info(">>> [START /video/publish] file=%s, wall=%s", target_path.name, req.post_to_wall)
+    try:
+        res = upload_video_to_vk(
+            video_path=target_path,
+            title=req.title,
+            description=req.description,
+            post_to_wall=True if req.post_to_wall is None else bool(req.post_to_wall),
+            group_id=int(group_id),
+        )
+        logger.info(">>> [FINISH /video/publish] video_id=%s, post_id=%s", res.get("video_id"), res.get("post_id"))
+        return JSONResponse(content=res)
+    except Exception as exc:
+        logger.error("Failed to publish video to VK: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Ошибка публикации в VK: {exc}")

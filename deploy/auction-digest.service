@@ -1,0 +1,18 @@
+[Unit]
+Description=Auction Video Digest Generator & Multi-Platform Publisher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# Путь к рабочей директории на VPS (измените при необходимости)
+WorkingDirectory=/root/reposter_api
+EnvironmentFile=-/root/reposter_api/.env
+ExecStart=/root/reposter_api/venv/bin/python -m app.orchestrator --publish --count 5
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

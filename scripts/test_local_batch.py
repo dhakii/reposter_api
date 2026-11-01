@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Скрипт локального тестирования генерации пакетного Reels-видео.
-Полное соответствие эталонной спецификации DESIGN_SYSTEM.md.
+Скрипт локального тестирования вертикального видео:
+- Сразу начинается с картин (мгновенный хук)
+- Разделенный крупный текст (Сверху: ЛОТ + Автор, Снизу: Название + Цена + Telegram)
+- Текст СТАТИЧЕН (не зумируется и не дрожит, идеальная читаемость)
+- Финал на фирменном светлом фоне логотипа (#EFEDEE)
 """
 
 import sys
@@ -27,6 +30,7 @@ SAMPLE_ARTWORKS = [
         "artist": "Татьяна Романова",
         "title": "Ромашковое настроение",
         "price": "15 000 ₽",
+        "is_sold": False,
         "image_path": str(SAMPLES_DIR / "sample_art_1.jpg"),
     },
     {
@@ -34,6 +38,7 @@ SAMPLE_ARTWORKS = [
         "artist": "Алексей Васильев",
         "title": "Утренний туман на Волге",
         "price": "22 000 ₽",
+        "is_sold": False,
         "image_path": str(SAMPLES_DIR / "sample_art_2.jpg"),
     },
     {
@@ -41,6 +46,7 @@ SAMPLE_ARTWORKS = [
         "artist": "Елена Смирнова",
         "title": "Пионы в хрустале",
         "price": "18 500 ₽",
+        "is_sold": False,
         "image_path": str(SAMPLES_DIR / "sample_art_3.jpg"),
     },
     {
@@ -48,6 +54,7 @@ SAMPLE_ARTWORKS = [
         "artist": "Дмитрий Морозов",
         "title": "Старый переулок",
         "price": "14 000 ₽",
+        "is_sold": False,
         "image_path": str(SAMPLES_DIR / "sample_art_4.jpg"),
     },
     {
@@ -55,6 +62,7 @@ SAMPLE_ARTWORKS = [
         "artist": "Анна Кузнецова",
         "title": "Золотой октябрь",
         "price": "20 000 ₽",
+        "is_sold": False,
         "image_path": str(SAMPLES_DIR / "sample_art_5.jpg"),
     },
 ]
@@ -62,45 +70,42 @@ SAMPLE_ARTWORKS = [
 
 def main():
     print("\n" + "=" * 65)
-    print("💎 [DESIGN_SYSTEM.md] Эталонная сборка вертикальных Reels (25.0s)")
+    print("🎬 [SPLIT TYPOGRAPHY REELS] Крупный статический текст + Светлый финал")
     print("=" * 65 + "\n")
 
     for art in SAMPLE_ARTWORKS:
         if not os.path.exists(art["image_path"]):
-            print(f"❌ Файл изображения не найден: {art['image_path']}")
+            print(f"❌ Файл не найден: {art['image_path']}")
             return 1
 
-    output_mp4 = ROOT_DIR / "output" / "batch_reels_design_system.mp4"
+    output_mp4 = ROOT_DIR / "output" / "reels_hybrid_editorial.mp4"
     builder = VideoBatchBuilder()
 
-    print(f"📦 Сборка подборки из {len(SAMPLE_ARTWORKS)} лотов...")
-    print("🎬 Токены и параметры:")
-    print("   - Спецификация: DESIGN_SYSTEM.md")
-    print("   - Разрешение: 1080x1920 (9:16)")
-    print("   - Хронометраж: 01_intro (2.5с) + 5 лотов (по 4.0с) + 07_outro (2.5с) = 25.0 сек")
-    print("   - Динамический стек: Y_start = round((1920 - H_total) / 2) - 10")
-    print("   - Ken Burns: синусоидальный наезд s(p) = 1.0 + 0.045 * (1 - cos(pi*p)) / 2")
-    print("   - Liquid Glass: 135° стеклянный градиент, 1.5px фаска, Backdrop Blur r=30, Saturation 1.3x")
-    print("   - Outro: бейдж @marinakhakimova_auction + кнопка «Перейти в аукцион →»")
-    print("   - Звук: FreeToUse EBU R128 (-14 LUFS) с затуханием 2.0с\n")
+    print(f"📦 Сборка {len(SAMPLE_ARTWORKS)} лотов...")
+    print("🎬 Параметры:")
+    print("   - Стиль: ГИБРИДНЫЙ ПРЕМИУМ-КАТАЛОГ")
+    print("   - Верх: ЛОТ в красной плашке + Имя автора крупно (Georgia Bold) + черта")
+    print("   - Фон: Полупрозрачный блюр из красок картины на галерейном офф-вайте")
+    print("   - Низ: Название + СТАРТОВАЯ ЦЕНА + Крупная цена с лучами + Telegram")
+    print("   - Полотно: Плавный Ken Burns (+3.5%) с глубокой музейной тенью")
+    print("   - Финал (3.0с): Двухфазный переход Dip-to-White (исчезновение в белый -> появление логотипа)\n")
 
     result = builder.build_batch_reels(
         artworks=SAMPLE_ARTWORKS,
         output_file=str(output_mp4),
-        batch_title="5 картин на аукционе сейчас",
         channel_link="@marinakhakimova_auction",
         slide_duration=4.0,
-        intro_duration=2.5,
-        outro_duration=2.5,
+        outro_duration=3.0,
+        style_variant="hybrid",
     )
 
-    print("✨ Рендеринг завершен успешно!")
+    print("✨ Рендеринг завершен!")
     print(f"   - Видео: {result['video_path']}")
     print(f"   - Обложка: {result['thumbnail_path']}")
     print(f"   - Длительность: {result['duration']} сек")
     print(f"   - Время рендера: {result['render_time_sec']} сек")
     print(f"   - Саундтрек: {result['soundtrack']}")
-    print(f"   - Размер файла: {result['file_size_mb']} MB")
+    print(f"   - Размер: {result['file_size_mb']} MB")
     print("\n" + "=" * 65 + "\n")
     return 0
 
