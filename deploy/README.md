@@ -38,7 +38,7 @@ chmod +x deploy/setup_systemd.sh
 1. Проверит и установит `ffmpeg` и базовые шрифты (`fonts-dejavu`)
 2. Создаст виртуальное окружение `venv` и установит зависимости
 3. Настроит системные службы `/etc/systemd/system/auction-digest.service` и `.timer`
-4. Активирует запуск каждый день в **12:00**
+4. Активирует запуск **3 раза в неделю (Понедельник, Среда, Пятница в 12:00)** — идеальный интервал в 2-3 дня, чтобы ролики успевали набирать охваты.
 
 ---
 
@@ -59,8 +59,13 @@ chmod +x deploy/setup_systemd.sh
   journalctl -u auction-digest.service -f
   ```
 
-* **Изменить время запуска:**
-  Отредактируйте `/etc/systemd/system/auction-digest.timer` (параметр `OnCalendar=*-*-* 12:00:00`), затем выполните:
+* **Изменить расписание (например, на каждые 2 или 3 дня):**
+  Отредактируйте `/etc/systemd/system/auction-digest.timer`:
+  * По умолчанию (Пн, Ср, Пт): `OnCalendar=Mon,Wed,Fri 12:00:00`
+  * Каждые 2 дня: `OnCalendar=*-*-01/2 12:00:00`
+  * Каждые 3 дня: `OnCalendar=*-*-01/3 12:00:00`
+
+  Затем примените изменения:
   ```bash
   systemctl daemon-reload
   systemctl restart auction-digest.timer

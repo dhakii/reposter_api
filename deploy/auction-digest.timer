@@ -1,14 +1,21 @@
 [Unit]
-Description=Trigger Auction Video Digest Daily
+Description=Trigger Auction Video Digest (Every 2-3 Days)
 Requires=auction-digest.service
 
 [Timer]
-# Запуск каждый день в 12:00 по времени сервера (можно поменять на любое время)
-OnCalendar=*-*-* 12:00:00
+# ВАРИАНТ 1 (по умолчанию): 3 раза в неделю — Понедельник, Среда, Пятница в 12:00
+# Это идеальный интервал для соцсетей (ролик живет 2-3 дня и набирает охваты):
+OnCalendar=Mon,Wed,Fri 12:00:00
+
+# ВАРИАНТ 2 (строго каждые 2 дня в 12:00):
+# OnCalendar=*-*-01/2 12:00:00
+
+# ВАРИАНТ 3 (строго каждые 3 дня в 12:00):
+# OnCalendar=*-*-01/3 12:00:00
+
 # Persistent=true гарантирует, что если сервер был выключен во время запуска,
 # задача выполнится сразу после включения сервера
 Persistent=true
-# Небольшой разброс времени (jitter) в 60 секунд для избежания пиковых нагрузок
 RandomizedDelaySec=60
 
 [Install]
