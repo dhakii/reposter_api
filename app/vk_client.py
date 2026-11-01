@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import urllib.parse
+from pathlib import Path
 from typing import Sequence, Optional
 import requests
 from vk_api import VkApi
@@ -300,18 +301,37 @@ def upload_video_to_vk(
 
     logger.info("Uploading video '%s' (size=%.2f MB) to VK group -%d...", vpath.name, vpath.stat().st_size / (1024 * 1024), gid)
 
-    upload_res = upload.video(
-        video_file=str(vpath),
-        name=video_name,
-        description=video_desc,
-        group_id=gid,
-        is_private=0,
-        wallpost=0,
-    )
+    try:
+        upload_res = upload.video(
+            video_file=str(vpath),
+            name=video_name,
+            description=video_desc,
+            group_id=gid,
+            is_private=0,
+            wallpost=0,
+        )
+        video_id = upload_res.get("video_id")
+        owner_id = upload_res.get("owner_id", -gid)
+    except Exception as e:
+        logger.warning("vk_api upload.video failed (%s). Falling back to direct video.save + curl...", e)
+        import subprocess
+        save_data = vk.video.save(
+            name=video_name,
+            description=video_desc,
+            group_id=gid,
+            is_private=0,
+            wallpost=0,
+        )
+        upload_url = save_data["upload_url"]
+        video_id = save_data["video_id"]
+        owner_id = save_data.get("owner_id", -gid)
 
-    video_id = upload_res.get("video_id")
-    owner_id = upload_res.get("owner_id", -gid)
-    logger.info("Video uploaded to VK: owner_id=%s, video_id=%s", owner_id, video_id)
+        curl_bin = "curl.exe" if os.name == "nt" else "curl"
+        cmd = [curl_bin, "-s", "-F", f"video_file=@{vpath}", upload_url]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if res.returncode != 0:
+            raise RuntimeError(f"Curl video upload failed: {res.stderr}")
+        logger.info("Video uploaded successfully via curl fallback: owner_id=%s, video_id=%s", owner_id, video_id)
 
     wall_res = None
     if post_to_wall and video_id:

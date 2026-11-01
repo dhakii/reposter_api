@@ -65,8 +65,15 @@ class SocialTemplateEngine:
         else:
             lot_range = "актуальные лоты"
 
-        prices = [l.get("price", 0) for l in lots if isinstance(l.get("price"), (int, float)) and l.get("price", 0) > 0]
-        min_price_str = f"{min(prices):,}".replace(",", " ") if prices else "5 000"
+        parsed_prices = []
+        for l in lots:
+            try:
+                val = int(l.get("price", 0))
+                if val > 0:
+                    parsed_prices.append(val)
+            except (ValueError, TypeError):
+                pass
+        min_price_str = f"{min(parsed_prices):,}".replace(",", " ") if parsed_prices else "5 000"
 
         # Человечный список лотов
         lot_lines = []
@@ -75,7 +82,11 @@ class SocialTemplateEngine:
             artist = l.get("artist") or "Художник"
             title = l.get("title") or "Работа без названия"
             price = l.get("price")
-            price_str = f" — от {price:,} ₽".replace(",", " ") if price else ""
+            try:
+                p_num = int(price)
+                price_str = f" — от {p_num:,} ₽".replace(",", " ")
+            except (ValueError, TypeError):
+                price_str = f" — от {price} ₽" if price else ""
             num_str = f"№{num} " if num else ""
             lot_lines.append(f"• Лот {num_str}«{title}» ({artist}{price_str})")
         lot_list_str = "\n".join(lot_lines)
