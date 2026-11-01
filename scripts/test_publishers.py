@@ -19,11 +19,8 @@ except Exception:
 ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+from app.env_loader import load_env_fallback
+load_env_fallback(ROOT_DIR / ".env")
 
 from app.publishers.manager import PublisherManager
 from app.template_engine import SocialTemplateEngine

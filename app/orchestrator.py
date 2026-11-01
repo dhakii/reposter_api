@@ -8,11 +8,10 @@ import argparse
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+ROOT_DIR = Path(__file__).resolve().parent.parent
+
+from app.env_loader import load_env_fallback
+load_env_fallback(ROOT_DIR / ".env")
 
 from app.sources.telegram_source import TelegramChannelSource
 from app.sources.pool import LotPool
