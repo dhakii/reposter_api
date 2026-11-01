@@ -19,10 +19,14 @@ class PublishMetadata:
     tags: List[str] = field(default_factory=lambda: [
         "твояколлекция", "аукцион", "живопись", "искусство", "картины", "shorts", "reels", "клипы"
     ])
+    custom_caption: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def full_caption(self, platform_id: str = "generic") -> str:
         """Формирует готовый текст описания с тегами под формат площадки."""
+        if self.custom_caption:
+            return self.custom_caption.strip()
+
         tag_str = " ".join(f"#{t.lstrip('#')}" for t in self.tags)
         lots_str = f"Лоты: {', '.join(str(n) for n in self.lot_nums)}" if self.lot_nums else ""
         lines = [self.title]

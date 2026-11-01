@@ -18,13 +18,14 @@ if ! command -v ffmpeg &> /dev/null; then
     apt-get update && apt-get install -y ffmpeg fonts-dejavu fonts-liberation
 fi
 
-# 2. Проверяем venv
+# 2. Проверяем venv и обновляем зависимости
 if [ ! -f "${PROJECT_DIR}/venv/bin/python" ]; then
     echo "-> Создание виртуального окружения python..."
     python3 -m venv "${PROJECT_DIR}/venv"
-    "${PROJECT_DIR}/venv/bin/pip" install --upgrade pip
-    "${PROJECT_DIR}/venv/bin/pip" install -r "${PROJECT_DIR}/requirements.txt"
 fi
+echo "-> Проверка и установка python-зависимостей..."
+"${PROJECT_DIR}/venv/bin/pip" install --upgrade pip
+"${PROJECT_DIR}/venv/bin/pip" install -r "${PROJECT_DIR}/requirements.txt"
 
 # 3. Подготавливаем юнит-файлы с реальным путем PROJECT_DIR
 SERVICE_SRC="${SCRIPT_DIR}/auction-digest.service"

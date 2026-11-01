@@ -20,6 +20,7 @@ from app.publishers.manager import PublisherManager
 from app.publishers.base import PublishMetadata, PublishResult
 from app.video_engine.builder import VideoBatchBuilder
 from app.cascade import CascadeCampaignManager
+from app.template_engine import SocialTemplateEngine
 
 logger = logging.getLogger("orchestrator")
 
@@ -30,11 +31,12 @@ class VideoDigestOrchestrator:
     1. Источники: скачивает свежие лоты из канала и сохраняет в постоянный архив.
     2. Выборка: берет свежие лоты, а если их не хватает — плавно добирает из архива старых картин.
     3. Рендеринг: собирает вертикальный ролик в стиле Hybrid Editorial с Dip-to-White и фоновой музыкой.
-    4. Каскадная публикация (1 ролик на 3 дня):
-       - День 1: Сборка ролика -> Публикация в VK
-       - День 2: Тот же ролик -> Публикация в Instagram
-       - День 3: Тот же ролик -> Публикация в YouTube
-       - День 4: Новый цикл (новый ролик -> VK)
+    4. Шаблоны: форматирует индивидуальные заголовки, описания и теги под каждую платформу (VK, IG, YT).
+    5. Каскадная публикация (1 ролик на 3 дня):
+       - День 1 (18:00): Сборка ролика -> Публикация в VK Клипы
+       - День 2 (18:00): Тот же ролик -> Публикация в Instagram Reels
+       - День 3 (18:00): Тот же ролик -> Публикация в YouTube Shorts
+       - День 4 (18:00): Новый цикл (новый ролик -> VK)
     """
 
     def __init__(
@@ -50,6 +52,7 @@ class VideoDigestOrchestrator:
         self.publishers = PublisherManager()
         self.builder = VideoBatchBuilder()
         self.cascade = CascadeCampaignManager()
+        self.template_engine = SocialTemplateEngine()
         self.channel_source = TelegramChannelSource(
             download_dir=self.output_dir / "real_lots"
         )
@@ -108,6 +111,7 @@ class VideoDigestOrchestrator:
             "duration": build_res.get("duration"),
             "file_size_mb": build_res.get("file_size_mb"),
             "lot_nums": lot_nums,
+            "lots": lots,
             "strategy": strategy,
         }
 
@@ -115,34 +119,48 @@ class VideoDigestOrchestrator:
         self,
         count: int = 5,
         force_new: bool = False,
-        channel_handle: str = "@marinakhakimova_auction",
+        channel_handle: Optional[str] = None,
+        channel_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Ежедневный вызов по таймеру в 06:00:
+        Ежедневный вызов по таймеру в 18:00:
         1. Если идет активная 3-дневная кампания — берет текущее видео и отправляет
-           на площадку сегодняшнего дня (День 2: Инста, День 3: YouTube).
+           на площадку сегодняшнего дня (День 2: Инста, День 3: YouTube) с шаблоном под эту соцсеть.
         2. Если кампания завершена (День 4+) или force_new=True — рендерит НОВЫЙ ролик
            и публикует его в День 1 (VK).
         """
-        logger.info("=== Ежедневный каскадный шаг (06:00) ===")
+        logger.info("=== Ежедневный каскадный шаг публикации (18:00) ===")
+
+        handle = channel_handle or os.getenv("TELEGRAM_CHANNEL_HANDLE", "@marinakhakimova_auction")
+        url = channel_url or os.getenv("TELEGRAM_CHANNEL_URL", "https://t.me/marinakhakimova_auction")
 
         pending_action = None if force_new else self.cascade.get_pending_action()
 
         if pending_action:
-            # Продолжение текущей кампании
+            # --- Продолжение текущей кампании (День 2 или День 3) ---
             day = pending_action["day"]
             platform = pending_action["platform"]
             video_path = pending_action["video_path"]
             lot_nums = pending_action["lot_nums"]
+            lots = pending_action.get("lots", [])
 
             logger.info("Кампания продолжается: День %d -> Публикация на платформу '%s'", day, platform)
 
-            lot_range = f"№{lot_nums[0]}..№{lot_nums[-1]}" if len(lot_nums) > 1 else f"№{lot_nums[0]}"
+            # Формируем индивидуальные заголовок, описание и теги через шаблонизатор
+            title, caption, tags = self.template_engine.render(
+                platform=platform,
+                lots=lots,
+                channel_handle=handle,
+                channel_url=url,
+            )
+
             metadata = PublishMetadata(
-                title=f"Аукцион «Твоя Коллекция» — лоты {lot_range}",
-                description="Подборка картин аукциона живописи «Твоя Коллекция». Участвуйте в торгах в Telegram!",
-                channel_handle=channel_handle,
+                title=title,
+                description=title,
+                custom_caption=caption,
+                channel_handle=handle,
                 lot_nums=[n for n in lot_nums if isinstance(n, int)],
+                tags=tags,
             )
 
             pub = self.publishers.get(platform)
@@ -164,23 +182,32 @@ class VideoDigestOrchestrator:
                 "result": str(result),
             }
 
-        # Иначе: Старт нового 3-дневного цикла (День 1)
+        # --- Старт нового 3-дневного цикла (День 1) ---
         logger.info("Активной кампании нет или запрошен новый ролик. Запуск Дня 1 нового цикла!")
-        video_data = self.generate_video(count=count, channel_handle=channel_handle)
+        video_data = self.generate_video(count=count, channel_handle=handle)
         video_path = video_data["video_path"]
         lot_nums = video_data["lot_nums"]
-
-        lot_range = f"№{lot_nums[0]}..№{lot_nums[-1]}" if len(lot_nums) > 1 else f"№{lot_nums[0]}"
-        metadata = PublishMetadata(
-            title=f"Аукцион «Твоя Коллекция» — лоты {lot_range}",
-            description="Подборка картин аукциона живописи «Твоя Коллекция». Участвуйте в торгах в Telegram!",
-            channel_handle=channel_handle,
-            lot_nums=[n for n in lot_nums if isinstance(n, int)],
-        )
+        lots = video_data["lots"]
 
         chain = self.cascade.get_configured_chain()
         first_platform = chain[0]
         logger.info("День 1: публикация первого шага в '%s'...", first_platform)
+
+        title, caption, tags = self.template_engine.render(
+            platform=first_platform,
+            lots=lots,
+            channel_handle=handle,
+            channel_url=url,
+        )
+
+        metadata = PublishMetadata(
+            title=title,
+            description=title,
+            custom_caption=caption,
+            channel_handle=handle,
+            lot_nums=[n for n in lot_nums if isinstance(n, int)],
+            tags=tags,
+        )
 
         pub = self.publishers.get(first_platform)
         if pub and pub.is_configured():
@@ -196,7 +223,7 @@ class VideoDigestOrchestrator:
             video_path=video_path,
             video_filename=video_data["video_filename"],
             lot_nums=lot_nums,
-            metadata=metadata,
+            lots=lots,
             first_platform_result=first_res,
         )
 
@@ -224,7 +251,7 @@ def main():
     )
 
     parser = argparse.ArgumentParser(description="Модульный оркестратор каскадных видео-дайджестов (1 ролик на 3 дня)")
-    parser.add_argument("--cascade-tick", action="store_true", help="Ежедневный запуск каскада в 06:00 (рекомендуется для systemd)")
+    parser.add_argument("--cascade-tick", action="store_true", help="Ежедневный запуск каскада в 18:00 (рекомендуется для systemd)")
     parser.add_argument("--force-new", action="store_true", help="Принудительно начать новый 3-дневный цикл с новым видео")
     parser.add_argument("--count", type=int, default=5, help="Количество лотов для ролика (по умолчанию 5)")
     parser.add_argument("--status", action="store_true", help="Показать статус модулей, состояние каскада и статистику архива")
