@@ -82,8 +82,9 @@ class LotPool:
                 # Обновляем метаданные и путь к картинке, если появился качественный файл
                 if has_valid_img:
                     store[key]["image_path"] = str(img_p)
-                if lot.get("price") and lot.get("price") > 0:
-                    store[key]["price"] = lot.get("price")
+                new_price = lot.get("price")
+                if new_price not in (None, "", 0):
+                    store[key]["price"] = new_price
                 if lot.get("artist"):
                     store[key]["artist"] = lot.get("artist")
                 if lot.get("title"):
@@ -122,7 +123,13 @@ class LotPool:
         # 1. Ищем совершенно свежие лоты
         fresh = [c for c in candidates if c.get("featured_count", 0) == 0]
         # Сортируем свежие по номеру лота от старшего к младшему (самые последние публикации)
-        fresh.sort(key=lambda x: x.get("lot_num") or 0, reverse=True)
+        def _safe_lot_num(x):
+            try:
+                return int(x.get("lot_num") or 0)
+            except (ValueError, TypeError):
+                return 0
+
+        fresh.sort(key=_safe_lot_num, reverse=True)
 
         selected: List[Dict[str, Any]] = []
         strategy = "fresh"
