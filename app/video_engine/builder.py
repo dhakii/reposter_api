@@ -58,17 +58,17 @@ class VideoBatchBuilder:
         src = Image.open(art["image_path"]).convert("RGBA")
         sw, sh = src.size
 
-        # 1. Полноразмерное полотно с безопасными пропорциями (без заезда на текст)
+        # 1. Полноразмерное полотно с гармоничными пропорциями
         max_art_w = 960
-        max_art_h = 920
+        max_art_h = 1040
         scale = min(max_art_w / sw, max_art_h / sh)
         art_w = int(round(sw * scale))
         art_h = int(round(sh * scale))
         art_resized = src.resize((art_w, art_h), Image.Resampling.LANCZOS)
 
-        # Центрирование картины в зоне Y=330..1390 (высота зоны 1060px)
+        # Центрирование картины в зоне Y=295..1435 (высота зоны 1140px)
         art_x = (W - art_w) // 2
-        art_y = 330 + (1060 - art_h) // 2
+        art_y = 295 + (1140 - art_h) // 2
 
         v = style_variant.lower()
 

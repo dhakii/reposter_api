@@ -14,40 +14,71 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 W, H = 1080, 1920
 
 BRAND_LOGO_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "brand" / "logo.png"
+FONTS_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "fonts"
 
 
 def _load_font(candidates, size):
+    # 1. Проверяем встроенные шрифты в репозитории (assets/fonts)
+    for name in candidates:
+        bundled = FONTS_DIR / name
+        if bundled.exists():
+            try:
+                return ImageFont.truetype(str(bundled), size)
+            except Exception:
+                pass
+
+    # 2. Проверяем локальные или прямые пути к шрифтам
     for fp in candidates:
         if os.path.exists(fp):
             try:
                 return ImageFont.truetype(fp, size)
             except Exception:
                 continue
-    return ImageFont.load_default()
+
+    # 3. Общесистемные пути Linux (Ubuntu/Debian)
+    linux_fallbacks = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+    ]
+    for lfp in linux_fallbacks:
+        if os.path.exists(lfp):
+            try:
+                return ImageFont.truetype(lfp, size)
+            except Exception:
+                pass
+
+    # 4. Fallback через PIL с передачей размера
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 FONTS = {
     # Крупные шрифты для мобильных экранов
-    "hook_kicker": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 28),
-    "artist_top": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 52),
-    "title_bottom": _load_font([r"C:\Windows\Fonts\georgiaz.ttf", "georgiaz.ttf"], 44),
-    "price_bottom": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 56),
-    "channel_bottom": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 30),
-    "channel_bold": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 30),
+    "hook_kicker": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 28),
+    "artist_top": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 54),
+    "title_bottom": _load_font(["PTSerif-Bold.ttf", "DejaVuSerif-Bold.ttf", "georgiaz.ttf"], 44),
+    "price_bottom": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 60),
+    "channel_bottom": _load_font(["PTSans-Regular.ttf", "DejaVuSans.ttf", "segoeui.ttf"], 30),
+    "channel_bold": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 30),
 
-    # Для стилей Премиум-каталога (4A, 4B, 4C)
-    "edit_kicker": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 26),
-    "edit_artist": _load_font([r"C:\Windows\Fonts\georgiab.ttf", "georgiab.ttf", r"C:\Windows\Fonts\segoeuib.ttf"], 52),
-    "edit_title": _load_font([r"C:\Windows\Fonts\georgiaz.ttf", "georgiaz.ttf"], 44),
-    "edit_badge": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 36),
-    "edit_price_large": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 58),
-    "edit_label": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 24),
-    "edit_channel": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 28),
+    # Для стилей Премиум-каталога (4A, 4B, 4C, Hybrid)
+    "edit_kicker": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 26),
+    "edit_artist": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "georgiab.ttf"], 54),
+    "edit_title": _load_font(["PTSerif-Bold.ttf", "DejaVuSerif-Bold.ttf", "georgiaz.ttf"], 44),
+    "edit_badge": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 34),
+    "edit_price_large": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 62),
+    "edit_label": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 24),
+    "edit_channel": _load_font(["PTSans-Regular.ttf", "DejaVuSans.ttf", "segoeui.ttf"], 30),
 
     # Финальный бренд-слайд
-    "brand_tag": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 28),
-    "brand_handle": _load_font([r"C:\Windows\Fonts\segoeuib.ttf", "segoeuib.ttf"], 46),
-    "brand_hint": _load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 28),
+    "brand_tag": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 28),
+    "brand_handle": _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf", "segoeuib.ttf"], 48),
+    "brand_hint": _load_font(["PTSans-Regular.ttf", "DejaVuSans.ttf", "segoeui.ttf"], 28),
 }
 
 
@@ -152,18 +183,31 @@ def make_editorial_typography_overlay(
         badge_str = f"АУКЦИОН  •  ЛОТ №{lot_num}"
         tb = draw.textbbox((0, 0), badge_str, font=FONTS["edit_label"])
         btw = tb[2] - tb[0]
-        bbw = btw + 44
-        bbh = 42
+        bth = tb[3] - tb[1]
+        bbw = btw + 48
+        bbh = max(42, bth + 18)
         bbx = (W - bbw) // 2
         bby = 150
-        draw.rounded_rectangle([bbx, bby, bbx + bbw, bby + bbh], radius=21, fill=(229, 45, 39, 240))
+        draw.rounded_rectangle([bbx, bby, bbx + bbw, bby + bbh], radius=bbh // 2, fill=(229, 45, 39, 240))
         draw.text((W // 2, bby + bbh // 2), badge_str, fill=(255, 255, 255, 255), font=FONTS["edit_label"], anchor="mm")
 
-        draw.text((W // 2, 230), artist, fill=(20, 22, 26, 255), font=FONTS["edit_artist"], anchor="mm")
-        draw.line([(W // 2 - 35, 275), (W // 2 + 35, 275)], fill=(229, 45, 39, 180), width=2)
+        ab = draw.textbbox((0, 0), artist, font=FONTS["edit_artist"])
+        if (ab[2] - ab[0]) > 920:
+            artist_font = _load_font(["PTSans-Bold.ttf", "DejaVuSans-Bold.ttf"], 42)
+        else:
+            artist_font = FONTS["edit_artist"]
+
+        draw.text((W // 2, 230), artist, fill=(20, 22, 26, 255), font=artist_font, anchor="mm")
+        draw.line([(W // 2 - 40, 275), (W // 2 + 40, 275)], fill=(229, 45, 39, 180), width=3)
 
         # НИЖНИЙ БЛОК: Сдвинут вниз в безопасную зону с гарантированным зазором от картины (>100px)
-        draw.text((W // 2, 1465), quoted_title, fill=(45, 48, 55, 255), font=FONTS["edit_title"], anchor="mm")
+        tb = draw.textbbox((0, 0), quoted_title, font=FONTS["edit_title"])
+        if (tb[2] - tb[0]) > 940:
+            title_font = _load_font(["PTSerif-Bold.ttf", "DejaVuSerif-Bold.ttf"], 36)
+        else:
+            title_font = FONTS["edit_title"]
+
+        draw.text((W // 2, 1465), quoted_title, fill=(45, 48, 55, 255), font=title_font, anchor="mm")
 
         status_label = "ПРОДАНО" if is_sold else "СТАРТОВАЯ ЦЕНА"
         lbl_color = (40, 167, 69, 255) if is_sold else (229, 45, 39, 255)
@@ -174,7 +218,7 @@ def make_editorial_typography_overlay(
         draw.line([(pb[0] - 50, 1580), (pb[0] - 15, 1580)], fill=(*lbl_color[:3], 200), width=3)
         draw.line([(pb[2] + 15, 1580), (pb[2] + 50, 1580)], fill=(*lbl_color[:3], 200), width=3)
 
-        draw.text((W // 2, 1660), f"Торги в Telegram: {channel_link}", fill=(85, 90, 102, 255), font=FONTS["edit_channel"], anchor="mm")
+        draw.text((W // 2, 1660), f"Торги в Telegram: {channel_link}", fill=(70, 75, 88, 255), font=FONTS["edit_channel"], anchor="mm")
         return overlay
 
     # 1. ВЕРХНИЙ СИММЕТРИЧНЫЙ БЛОК (Центрирован строго по X=540)
@@ -186,7 +230,7 @@ def make_editorial_typography_overlay(
         draw.rounded_rectangle([W // 2 - 140, 155, W // 2 + 140, 197], radius=21, fill=(229, 45, 39, 230))
         draw.text((W // 2, 176), lot_tag, fill=(255, 255, 255, 255), font=FONTS["edit_label"], anchor="mm")
         draw.text((W // 2, 238), artist, fill=(20, 22, 28, 255), font=FONTS["edit_artist"], anchor="mm")
-        draw.text((W // 2, 285), "ТВОЯ КОЛЛЕКЦИЯ  •  АУКЦИОН КАРТИН", fill=(130, 135, 145, 255), font=_load_font([r"C:\Windows\Fonts\segoeui.ttf", "segoeui.ttf"], 22), anchor="mm")
+        draw.text((W // 2, 285), "ТВОЯ КОЛЛЕКЦИЯ  •  АУКЦИОН КАРТИН", fill=(130, 135, 145, 255), font=_load_font(["PTSans-Regular.ttf", "DejaVuSans.ttf"], 22), anchor="mm")
     else:
         # Варианты 4A и 4C: чистый центрированный заголовок с тонкой разделительной линией
         draw.text((W // 2, 175), kicker, fill=(229, 45, 39, 255), font=FONTS["edit_kicker"], anchor="mm")
