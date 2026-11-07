@@ -29,7 +29,11 @@ class VkRuSession(requests.Session):
 
     def request(self, method, url, *args, **kwargs):
         if "timeout" not in kwargs:
-            kwargs["timeout"] = 35
+            # Для загрузки медиафайлов даём увеличенный таймаут
+            if "files" in kwargs or "upload" in url or "upload.do" in url:
+                kwargs["timeout"] = 180
+            else:
+                kwargs["timeout"] = 35
 
         # Нормализация доменов vk.com -> vk.ru
         if "api.vk.com" in url:
@@ -42,8 +46,18 @@ class VkRuSession(requests.Session):
 
         if proxy:
             parsed = urllib.parse.urlsplit(url)
-            # Перенаправляем все вызовы к VK через Cloudflare Worker
-            if any(k in parsed.netloc for k in ("vk.com", "vk.ru", "userapi.com")):
+            # Перенаправляем все вызовы к VK и серверам CDN через Cloudflare Worker
+            vk_domains = (
+                "vk.com",
+                "vk.ru",
+                "userapi.com",
+                "mycdn.me",
+                "okcdn.ru",
+                "vk.me",
+                "vkuser.net",
+                "vkcache.com",
+            )
+            if any(k in parsed.netloc for k in vk_domains):
                 path_and_query = parsed.path
                 if parsed.query:
                     path_and_query += "?" + parsed.query
@@ -327,11 +341,26 @@ def upload_video_to_vk(
         owner_id = save_data.get("owner_id", -gid)
 
         curl_bin = "curl.exe" if os.name == "nt" else "curl"
-        cmd = [curl_bin, "-s", "-F", f"video_file=@{vpath}", upload_url]
+        proxy = os.getenv("VK_PROXY_URL", "").strip().rstrip("/")
+        cmd = [curl_bin, "-sS", "-F", f"video_file=@{vpath}"]
+        if proxy:
+            parsed = urllib.parse.urlsplit(upload_url)
+            proxy_target = f"{proxy}{parsed.path}"
+            if parsed.query:
+                proxy_target += f"?{parsed.query}"
+            cmd.extend(["-H", f"X-Target-URL: {upload_url}"])
+            cmd.extend(["-H", f"X-VK-Host: {parsed.netloc}"])
+            secret = os.getenv("VK_PROXY_SECRET") or os.getenv("SHARED_SECRET")
+            if secret:
+                cmd.extend(["-H", f"X-Proxy-Secret: {secret}"])
+            cmd.append(proxy_target)
+        else:
+            cmd.append(upload_url)
+
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         if res.returncode != 0:
-            raise RuntimeError(f"Curl video upload failed: {res.stderr}")
-        logger.info("Video uploaded successfully via curl fallback: owner_id=%s, video_id=%s", owner_id, video_id)
+            raise RuntimeError(f"Curl video upload failed (code {res.returncode}): {res.stderr.strip() or res.stdout.strip()}")
+        logger.info("Video uploaded successfully via curl fallback: owner_id=%s, video_id=%s, resp=%s", owner_id, video_id, res.stdout[:200])
 
     wall_res = None
     if post_to_wall and video_id:
